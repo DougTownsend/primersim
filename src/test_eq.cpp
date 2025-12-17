@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <iostream>
 #include <mpfr.h>
 #include "eq.hpp"
 
@@ -27,11 +28,13 @@ int main(void){
             temp = 40;
             */
     }
-    //pa.read_primers_individual("codewords.csv");
+    //pa.read_primers_individual("codes.csv");
     //pa.assign_addresses_nosort("addresses.csv");
-    random_address_assignment(pa, 1);
+    pa.read_addresses("addresses.csv", false);
+    std::cout << pa.addresses.size() << "\n";
+    //random_address_assignment(pa, 1);
 
-    //pa.sim_pcr("test_bad.csv", 928, temps.size(), temps, dna_conc, primer_conc, primer_conc, mv, dv, dntp);
+    pa.sim_pcr("test_bad3.csv", 0, temps.size(), temps, dna_conc, primer_conc, primer_conc, mv, dv, dntp);
     //printf("%03u: %e\n", i, ratio);
     /*
     for (double power = -20; power < -5.5; power += 1.){
