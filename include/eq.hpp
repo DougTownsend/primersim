@@ -61,27 +61,7 @@ namespace primersim{
     const int FR = 7;
     const int FX = 8;
     const int RX = 9;
-    /*
-    #define F   0
-    #define R   1
-    #define A   2
-    #define B   3
-    #define X   4
-    #define Y   5
-    #define FH  6
-    #define RH  7
-    #define FF  8
-    #define RR  9
-    #define FR  10
-    #define FA  11
-    #define FB  12
-    #define RB  13
-    #define RA  14
-    #define FX  15
-    #define FY  16
-    #define RX  17
-    #define RY  18
-    */
+
     const int K_FH = 0;
     const int K_RH = 1;
     const int K_FF = 2;
@@ -89,21 +69,6 @@ namespace primersim{
     const int K_FR = 4;
     const int K_FX = 5;
     const int K_RX = 6;
-    /*
-    #define K_FH    0
-    #define K_RH    1
-    #define K_FF    2
-    #define K_RR    3
-    #define K_FR    4
-    #define K_FA    5
-    #define K_FB    6
-    #define K_RB    7
-    #define K_RA    8
-    #define K_FX    9
-    #define K_FY    10
-    #define K_RX    11
-    #define K_RY    12
-    */
 
     const int addr_end = 0;
     const int primerf = 1;
@@ -308,8 +273,6 @@ namespace primersim{
             //  addr_r = 2
             //  addr_rrc = 3
 
-            dh_ds dhds[2][4];
-
             double tmp_dhds[2][4][2];
 
             double dhds_primer_f_addr_f[2];
@@ -325,8 +288,6 @@ namespace primersim{
     class EQ{
         public:
             Psim_f last_val[2];
-            Psim_f bounds[3];
-            Psim_f solutions[3];
             Psim_f tmp[4];
             Psim_f c[19];
             Psim_f c0[6];
@@ -341,18 +302,12 @@ namespace primersim{
             Psim_f best_spec_lin_amp;
             Psim_f best_nonspec_exp_amp;
             Psim_f best_nonspec_lin_amp;
-            Psim_f saved_frc_conc;
-            Psim_f saved_rrc_conc;
-            Psim_f avg_nonspec_amp;
             Psim_f last_nonspec_frc_total;
             Psim_f last_nonspec_rrc_total;
             std::vector<address_k_conc> address_k_conc_vec;
 
             void calc_cx();
-            void calc_cf(Psim_f &ret);
-            void calc_cr(Psim_f &ret);
             void calc_bound_concs();
-            void solve_cf_cr(int F_or_R);
             void solve_eq();
             void print_state(std::string out_filename, std::string s);
     };

@@ -34,7 +34,7 @@ int main(void){
     std::cout << pa.addresses.size() << "\n";
     //random_address_assignment(pa, 1);
 
-    pa.sim_pcr("test_bad3.csv", 0, temps.size(), temps, dna_conc, primer_conc, primer_conc, mv, dv, dntp);
+    pa.sim_pcr("regression_new.csv", 0, temps.size(), temps, dna_conc, primer_conc, primer_conc, mv, dv, dntp);
     //printf("%03u: %e\n", i, ratio);
     /*
     for (double power = -20; power < -5.5; power += 1.){

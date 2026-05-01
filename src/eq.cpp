@@ -19,10 +19,6 @@ namespace primersim{
         fprintf(outfile, "%s,", s.c_str());
         for(i = 0; i < 2; i++)
             mpfr_fprintf(outfile, "last_val[%d],%.9Re,", i, last_val[i].val);
-        for(i = 0; i < 3; i++)
-            mpfr_fprintf(outfile, "bounds[%d],%.9Re,",i,bounds[i].val);
-        for(i = 0; i < 3; i++)
-            mpfr_fprintf(outfile, "solutions[%d],%.9Re,",i,solutions[i].val);
         for(i = 0; i < 4; i++)
             mpfr_fprintf(outfile, "tmp[%d],%.9Re,",i,tmp[i].val);
         for(i = 0; i < 19; i++)
@@ -95,20 +91,6 @@ namespace primersim{
         c[X].div(c0[X], tmp[2]);
     }
 
-    //0 = c[R] + K[K_RH]*c[F] + 2*k[K_RR]*c[R]*c[R] + k[K_FR]*c[F]*c[R] + k[K_RA]*c[R]*c[A] + k[K_RB]*c[R]*c[B] + k[K_RX]*c[R]*c[X] + k[K_RY]*c[R]*c[Y] - c0[R]
-    //0 = c[F] + k[K_FH]*c[F] + 2*k[K_FF]*c[F]*c[F] + k[K_FR]*c[F]*c[R] + k[K_FA]*c[F]*c[A] + k[K_FB]*c[F]*c[B] + k[K_FX]*c[F]*c[X] + k[K_FY]*c[F]*c[Y] - c0[F]
-
-
-    //c[F], c[R], c0[:], and k[:] must be defined
-    void EQ::calc_cf(Psim_f &ret){
-        ret = c[F] + k[K_FH]*c[F] + k[K_FF]*c[F]*c[F]*2.0 + k[K_FR]*c[F]*c[R] + k[K_FX]*c[F]*c[X] - c0[F];
-    }
-
-    //c[F], c[R], c0[:], and k[:] must be defined
-    void EQ::calc_cr(Psim_f &ret){
-        ret = c[R] + k[K_RH]*c[F] + k[K_RR]*c[R]*c[R]*2.0 + k[K_FR]*c[F]*c[R] + k[K_RX]*c[R]*c[X] - c0[R];
-    }
-
     void EQ::calc_bound_concs(){
         c[FH] = k[K_FH] * c[F];
         c[RH] = k[K_RH] * c[R];
@@ -119,121 +101,84 @@ namespace primersim{
         c[RX] = k[K_RX] * c[R] * c[X];
     }
 
-    /*
-    bounds[0] = lower bound
-    bounds[1] = midpoint
-    bounds[2] = upper bound
-
-    Solutions are the value targeting zero
-    The closer to zero the more accurate the concentrations
-    solutions[0] = lower bound solution
-    solutions[1] = midpoint solution
-    solutions[2] = upper bound solution
-    */
-    void EQ::solve_cf_cr(int F_or_R){
-        bounds[0].set_d(0.0);
-        bounds[2].set(c0[F_or_R]);
-        bounds[1].div_d(bounds[2], 2.0);
-
-        c[F_or_R].set(bounds[0]);
-        calc_cx();
-        if(F_or_R == F)
-            calc_cf(solutions[0]);
-        else
-            calc_cr(solutions[0]);
-        c[F_or_R].set(bounds[1]);
-        calc_cx();
-        if(F_or_R == F)
-            calc_cf(solutions[1]);
-        else
-            calc_cr(solutions[1]);
-        c[F_or_R].set(bounds[2]);
-        calc_cx();
-        if(F_or_R == F)
-            calc_cf(solutions[2]);
-        else
-            calc_cr(solutions[2]);
-
-        //if ((upper_sol > 0.0 && mid_sol > 0.0 && lower_sol > 0.0) || (upper_sol < 0.0 && mid_sol < 0.0 && lower_sol < 0.0)){
-        if((solutions[2].cmp_d(0.) > 0 && solutions[1].cmp_d(0.) > 0 && solutions[0].cmp_d(0.) > 0) ||
-            (solutions[2].cmp_d(0.) < 0 && solutions[1].cmp_d(0.) < 0 && solutions[0].cmp_d(0.) < 0)){
-            printf("No Solution. Needs more precision\n");
-            return;
-        }
-
-        //Binary search to find the root
-        for (int i = 0; i < FLOAT_PREC * 2; i++){
-            //Check if root has been found
-            //if (upper_sol == zero) return upper_bound;
-            if(solutions[2].cmp_d(0.) == 0){
-                c[F_or_R].set(bounds[2]);
-                break;
-            }
-
-            //if (mid_sol == zero) return midpoint;
-            if(solutions[1].cmp_d(0.) == 0){
-                c[F_or_R].set(bounds[1]);
-                break;
-            }
-
-            //if (lower_sol == zero) return lower_bound;
-            if(solutions[0].cmp_d(0.) == 0){
-                c[F_or_R].set(bounds[0]);
-                break;
-            }
-
-            //Find next window
-            //if ((upper_sol > zero && mid_sol < zero) || (upper_sol < zero && mid_sol > zero)){
-            if((solutions[2].cmp_d(0.) > 0 && solutions[1].cmp_d(0.) < 0) || (solutions[2].cmp_d(0.) < 0 && solutions[1].cmp_d(0.) > 0)){
-                //lower_bound = midpoint;
-                bounds[0] = bounds[1];
-                //midpoint = lower_bound / two + upper_bound / two;
-                bounds[1] = bounds[0] / 2.0 + bounds[2] / 2.0;
-                //lower_sol = mid_sol;
-                solutions[0] = solutions[1];
-            } else {
-                c[X] = c0[X] / (k[K_FX]*c[F] + k[K_RX]*c[R] + 1.0);
-                //upper_bound = midpoint;
-                bounds[2] = bounds[1];
-                //midpoint = lower_bound / two + upper_bound / two;
-                bounds[1] = bounds[0] / 2.0 + bounds[1] / 2.0;
-                //upper_sol = mid_sol;
-                solutions[2] = solutions[1];
-            }
-
-            c[F_or_R] = bounds[1];
-            //Check if at the limits of precision
-            //if(midpoint >= upper_bound || midpoint <= lower_bound){
-            if(bounds[1].cmp(bounds[2]) >= 0 || bounds[1].cmp(bounds[0]) <= 0){
-                break;
-            }
-
-            //Calculate solution for new midpoint
-            c[F_or_R] = bounds[1];
-            calc_cx();
-            if(F_or_R == F)
-                calc_cf(solutions[1]);
-            else
-                calc_cr(solutions[1]);
-        }
-    }
-
+    // Solves the coupled equilibrium for c[F], c[R], and c[X].
+    // Inner Newton solver handles the F/R 2x2 system with c[X] held constant;
+    // outer loop refreshes c[X] = c0[X] / (1 + k_FX*c[F] + k_RX*c[R]) until
+    // c[F] and c[R] stop changing.
     void EQ::solve_eq(){
+        constexpr int max_iter_outer = FLOAT_PREC * 2;
+        constexpr int max_iter = 15;
+
+        Psim_f B1, B2;
+        Psim_f f, r;
+        Psim_f F1, F2;
+        Psim_f J11, J12, J21, J22;
+        Psim_f det, df, dr;
+        Psim_f f_new, r_new;
+        Psim_f tmp1, tmp2;
+        Psim_f prev_res;
+
         c[F] = c0[F] / 2.0;
         c[R] = c0[R] / 2.0;
+        calc_cx();
         last_val[F] = c[F];
         last_val[R] = c[R];
-        int i;
-        for(i = 0; i < FLOAT_PREC * 2; i++){
-            solve_cf_cr(F);
-            //mpfr_printf("%.5Re %.5Re %.5Re\n", solutions[0], solutions[1], solutions[2]);
-            solve_cf_cr(R);
-            //mpfr_printf("%.5Re %.5Re %.5Re\n\n", solutions[0], solutions[1], solutions[2]);
-            if(!c[F].cmp(last_val[F]) && !c[R].cmp(last_val[R]))
+
+        for (int outer = 0; outer < max_iter_outer; ++outer) {
+            mpfr_set_inf(prev_res.val, 1);
+
+            B1 = k[K_RX]*c[X] + 1.0;
+            B2 = k[K_FX]*c[X] + k[K_FH] + 1.0;
+
+            // Decoupled initial guesses (exact when k_FR = K_RH = 0)
+            mpfr_sqrt(tmp1.val, (B2*B2 + k[K_FF]*c0[F]*8.0).val, MPFR_RNDN);
+            f = (B2*(-1.0) + tmp1) / (k[K_FF]*4.0);
+            mpfr_sqrt(tmp1.val, (B1*B1 + k[K_RR]*c0[R]*8.0).val, MPFR_RNDN);
+            r = (B1*(-1.0) + tmp1) / (k[K_RR]*4.0);
+
+            for (int iter = 0; iter < max_iter; ++iter) {
+                F1 = k[K_RR]*r*r*2.0 + (B1 + k[K_FR]*f)*r + k[K_RH]*f - c0[R];
+                F2 = k[K_FF]*f*f*2.0 + (B2 + k[K_FR]*r)*f - c0[F];
+
+                // Stop when residual stops decreasing — that's the precision
+                // floor of mpfr arithmetic; further iterations can't improve it.
+                mpfr_abs(tmp1.val, F1.val, MPFR_RNDN);
+                mpfr_abs(tmp2.val, F2.val, MPFR_RNDN);
+                mpfr_add(tmp1.val, tmp1.val, tmp2.val, MPFR_RNDN);
+                if (tmp1.cmp(prev_res) >= 0) break;
+                mpfr_set(prev_res.val, tmp1.val, MPFR_RNDN);
+
+                J11 = k[K_RH] + k[K_FR]*r;
+                J12 = k[K_RR]*r*4.0 + B1 + k[K_FR]*f;
+                J21 = k[K_FF]*f*4.0 + B2 + k[K_FR]*r;
+                J22 = k[K_FR]*f;
+
+                det = J11*J22 - J12*J21;
+                df  = (J12*F2 - J22*F1) / det;
+                dr  = (J21*F1 - J11*F2) / det;
+
+                f_new = f + df;
+                r_new = r + dr;
+
+                if      (f_new.cmp_d(0.0) < 0) f_new = f*0.5;
+                else if (f_new.cmp(c0[F]) > 0) f_new = (f + c0[F])*0.5;
+                if      (r_new.cmp_d(0.0) < 0) r_new = r*0.5;
+                else if (r_new.cmp(c0[R]) > 0) r_new = (r + c0[R])*0.5;
+
+                f = f_new;
+                r = r_new;
+            }
+
+            c[F] = f;
+            c[R] = r;
+            calc_cx();
+
+            if (!c[F].cmp(last_val[F]) && !c[R].cmp(last_val[R]))
                 break;
             last_val[F] = c[F];
             last_val[R] = c[R];
         }
+
         calc_bound_concs();
     }
 
@@ -512,13 +457,6 @@ namespace primersim{
                 eq.nonspec_exp_amp = 0.0;
                 eq.nonspec_lin_amp = 0.0;
 
-                /*
-                eq.k[K_FA].set_d(dg_to_eq_const(dh_ds[i].f_frc_dh - (dh_ds[i].f_frc_ds * (temp_c + 273.15)), temp_c));
-                eq.k[K_FB].set_d(dg_to_eq_const(dh_ds[i].f_rrc_dh - (dh_ds[i].f_rrc_ds * (temp_c + 273.15)), temp_c));
-                eq.k[K_RA].set_d(dg_to_eq_const(dh_ds[i].r_frc_dh - (dh_ds[i].r_frc_ds * (temp_c + 273.15)), temp_c));
-                eq.k[K_RB].set_d(dg_to_eq_const(dh_ds[i].r_rrc_dh - (dh_ds[i].r_rrc_ds * (temp_c + 273.15)), temp_c));
-                */
-
                 eq.k[K_FF] = dg_to_eq_const(dh_ds[i].f_f_dh - (dh_ds[i].f_f_ds * (temp_c + 273.15)), temp_c);
                 eq.k[K_RR] = dg_to_eq_const(dh_ds[i].r_r_dh - (dh_ds[i].r_r_ds * (temp_c + 273.15)), temp_c);
                 eq.k[K_FR] = dg_to_eq_const(dh_ds[i].f_r_dh - (dh_ds[i].f_r_ds * (temp_c + 273.15)), temp_c);
@@ -526,10 +464,6 @@ namespace primersim{
                 eq.k[K_FH] = dg_to_eq_const(f_hp_dh - (f_hp_ds * (temp_c + 273.15)), temp_c);
                 eq.k[K_RH] = dg_to_eq_const(r_hp_dh - (r_hp_ds * (temp_c + 273.15)), temp_c);
 
-                /*
-                eq.k[K_FY].set_d(0.);
-                eq.k[K_RY].set_d(0.);
-                */
                 eq.k[K_FX] = 0.;
                 eq.k[K_RX] = 0.;
                 int count = 0;
@@ -556,31 +490,18 @@ namespace primersim{
                 eq.solve_eq();
                 //c[F] and c[R] are now solved, all nonspec concs can now be solved individually
 
-                //TODO: Fix this
-                /*
-                eq.tmp[0].add(eq.c[FA], eq.c[RA]);
-                eq.tmp[1].add(eq.c[FB], eq.c[RB]);
-                mpfr_min(eq.spec_fwd_amp, eq.tmp[0], eq.tmp[1]);
-                mpfr_max(eq.tmp[0], eq.tmp[0], eq.tmp[1]);
-                eq.spec_rev_amp.sub(eq.tmp[0], eq.spec_fwd_amp);
-                */
-
-                //Set c[X] and c[Y] to concs of individual strands
+                //Set c[X] to concs of individual strands
                 eq.c0[X].set_d(dna_conc / addresses.size());
-                //eq.c0[Y].set_d(dna_conc / addresses.size());
                 for (unsigned int j = 0; j < addresses.size(); j++){
                     if (i == j)
                         continue;
                     eq.k[K_FX].set_d(dg_to_eq_const(dh_ds[j].f_frc_dh - (dh_ds[j].f_frc_ds * (temp_c + 273.15)), temp_c));
                     eq.k[K_RX].set_d(dg_to_eq_const(dh_ds[j].r_frc_dh - (dh_ds[j].r_frc_ds * (temp_c + 273.15)), temp_c));
-                    //eq.k[K_FY].set_d(dg_to_eq_const(dh_ds[j].f_rrc_dh - (dh_ds[j].f_rrc_ds * (temp_c + 273.15)), temp_c));
-                    //eq.k[K_RY].set_d(dg_to_eq_const(dh_ds[j].r_rrc_dh - (dh_ds[j].r_rrc_ds * (temp_c + 273.15)), temp_c));
                     eq.calc_cx();
                     eq.calc_bound_concs();
 
                     //nonspec_exp_amp += min(fwd bound, rev bound)
                     eq.tmp[0].add(eq.c[FX], eq.c[RX]);
-                    //eq.tmp[1].add(eq.c[FY], eq.c[RY]);
                     eq.tmp[2].min(eq.tmp[0], eq.tmp[1]);
                     eq.nonspec_exp_amp.add(eq.nonspec_exp_amp, eq.tmp[2]);
 
@@ -925,24 +846,8 @@ namespace primersim{
                 }
 
             }
-            
 
-            /*
-            //tmp[0] = percent bound forward primer binding sites
-            eq.tmp[3].add(eq.c[FA], eq.c[RA]);
-            eq.tmp[2].set(eq.tmp[3]);
-            eq.tmp[3].add(eq.tmp[3], eq.c[A]);
-            eq.tmp[0].div(eq.tmp[2], eq.tmp[3]);
-            eq.tmp[0].mul_d(eq.tmp[0], 100.);
-
-            //tmp[1] = percent bound rev primer binding sites
-            eq.tmp[3].add(eq.c[FB], eq.c[RB]);
-            eq.tmp[2].set(eq.tmp[3]);
-            eq.tmp[3].add(eq.tmp[3], eq.c[B]);
-            eq.tmp[1].div(eq.tmp[2], eq.tmp[3]);
-            eq.tmp[1].mul_d(eq.tmp[1], 100.);
-            */
-            eq.tmp[0].div(eq.address_k_conc_vec[addr].total_f_conc, eq.address_k_conc_vec[addr].last_f_conc); 
+            eq.tmp[0].div(eq.address_k_conc_vec[addr].total_f_conc, eq.address_k_conc_vec[addr].last_f_conc);
             eq.tmp[0].sub_d(eq.tmp[0], 1.0);
 
             eq.tmp[1].div(eq.address_k_conc_vec[addr].total_r_conc, eq.address_k_conc_vec[addr].last_r_conc); 
@@ -971,11 +876,6 @@ namespace primersim{
                 eq.nonspec_total.add(eq.nonspec_total, eq.address_k_conc_vec[i].total_f_conc);
                 eq.nonspec_total.add(eq.nonspec_total, eq.address_k_conc_vec[i].total_r_conc);
             }
-            /*
-            eq.avg_nonspec_amp.add_d(eq.avg_nonspec_amp, 1.0);
-            eq.tmp[2].mul(eq.tmp[0], eq.avg_nonspec_amp);
-            eq.tmp[3].mul(eq.tmp[1], eq.avg_nonspec_amp);
-            */
             eq.tmp[1].div(eq.tmp[0], eq.tmp[1]);
             eq.tmp[1].sub_d(eq.tmp[1], 1.);
             eq.tmp[3].div(eq.tmp[2], eq.tmp[3]);
@@ -1015,7 +915,6 @@ namespace primersim{
     void Primeanneal::eval_addresses(const char *out_filename, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc){
         address_index = 0;
         std::vector<std::thread> threads;
-        address_index = 0;
         for(unsigned int i = 0; i < num_cpu; i++){
             threads.push_back(std::thread(&Primeanneal::eval_addresses_thread, this, out_filename, temp_c_profile.size(), temp_c_profile,  dna_conc, primer_f_conc, primer_r_conc, mv_conc, dv_conc, dntp_conc));
         }
