@@ -54,8 +54,17 @@ namespace primersim{
         Real f_new, r_new;
         Real residual, prev_res;
 
-        c[F] = c0[F] / 2.0;
-        c[R] = c0[R] / 2.0;
+        // First call: cold-start in the middle of the box.
+        // Subsequent calls: keep c[F], c[R] from the prior solve as a
+        // warm start. c0/k change slowly between calls so the prior
+        // equilibrium is usually within a couple of Newton iters of the
+        // new one. calc_cx is always called to refresh c[X] under
+        // current c0[X], k_FX, k_RX.
+        if (!warm_start_valid) {
+            c[F] = c0[F] / 2.0;
+            c[R] = c0[R] / 2.0;
+            warm_start_valid = true;
+        }
         calc_cx();
         last_val[F] = c[F];
         last_val[R] = c[R];

@@ -106,8 +106,8 @@ namespace primersim{
 
         //R strand bindings
         eq.c0[X] = eq.address_k_conc_vec[i].rstrand[end5][end3];
-        eq.k[K_FX] = dhds_to_eq_const(eq.address_k_conc_vec[bind_addr].dhds_primer_f_addr_frc, temp_c_profile[cycle-1]);
-        eq.k[K_RX] = dhds_to_eq_const(eq.address_k_conc_vec[bind_addr].dhds_primer_r_addr_frc, temp_c_profile[cycle-1]);
+        eq.k[K_FX] = eq.address_k_conc_vec[bind_addr].dhds_K_primer_f_addr_frc;
+        eq.k[K_RX] = eq.address_k_conc_vec[bind_addr].dhds_K_primer_r_addr_frc;
         eq.calc_cx();
         eq.calc_bound_concs();
         //Remove bound primer from primer concentration
@@ -119,8 +119,8 @@ namespace primersim{
 
         //F Strand Bindings
         eq.c0[X] = eq.address_k_conc_vec[i].fstrand[end5][end3];
-        eq.k[K_FX] = dhds_to_eq_const(eq.address_k_conc_vec[bind_addr].dhds_primer_f_addr_rrc, temp_c_profile[cycle-1]);
-        eq.k[K_RX] = dhds_to_eq_const(eq.address_k_conc_vec[bind_addr].dhds_primer_r_addr_rrc, temp_c_profile[cycle-1]);
+        eq.k[K_FX] = eq.address_k_conc_vec[bind_addr].dhds_K_primer_f_addr_rrc;
+        eq.k[K_RX] = eq.address_k_conc_vec[bind_addr].dhds_K_primer_r_addr_rrc;
         eq.calc_cx();
         eq.calc_bound_concs();
         //Remove bound primer from primer concentration
@@ -132,7 +132,7 @@ namespace primersim{
     }
 
     void Primeanneal::calc_strand_bindings(EQ &eq, const std::vector<double> &temp_c_profile, int i, int cycle, int addr, int end5, int end3){
-        double eq_const;
+        (void)temp_c_profile; (void)cycle;  // K values now come from the cache
         int bind_addr5 = (end5 == 0) ? i : addr;
         int bind_addr3 = (end3 == 0) ? i : addr;
 
@@ -159,24 +159,21 @@ namespace primersim{
         // tmp[1] = sum(f primer eq const * partial concentration)
         // tmp[2] = sum(r primer eq const * partial concentration)
 
+        // K values come from the per-cycle cache populated in sim_pcr.
+        const auto &K_i = eq.address_k_conc_vec[i].tmp_dhds_K;
+
         // Reverse strand bindings
         // 5' R -> R Strand -> FRC 3'
         eq.tmp[0] += eq.address_k_conc_vec[i].rstrand[end5][end3];
 
-        eq_const = dhds_to_eq_const(eq.address_k_conc_vec[i].tmp_dhds[0][binding_end5], temp_c_profile[cycle - 1]);
-        eq.tmp[1] += eq.address_k_conc_vec[bind_addr5].rstrand[end5][end3] * eq_const;
-
-        eq_const = dhds_to_eq_const(eq.address_k_conc_vec[i].tmp_dhds[1][binding_end5], temp_c_profile[cycle - 1]);
-        eq.tmp[2] += eq.address_k_conc_vec[bind_addr5].rstrand[end5][end3] * eq_const;
+        eq.tmp[1] += eq.address_k_conc_vec[bind_addr5].rstrand[end5][end3] * K_i[0][binding_end5];
+        eq.tmp[2] += eq.address_k_conc_vec[bind_addr5].rstrand[end5][end3] * K_i[1][binding_end5];
 
         // 3' Binding
         eq.tmp[0] += eq.address_k_conc_vec[i].rstrand[end5][end3];
 
-        eq_const = dhds_to_eq_const(eq.address_k_conc_vec[i].tmp_dhds[0][binding_end3], temp_c_profile[cycle - 1]);
-        eq.tmp[1] += eq.address_k_conc_vec[bind_addr3].rstrand[end5][end3] * eq_const;
-
-        eq_const = dhds_to_eq_const(eq.address_k_conc_vec[i].tmp_dhds[1][binding_end3], temp_c_profile[cycle - 1]);
-        eq.tmp[2] += eq.address_k_conc_vec[bind_addr3].rstrand[end5][end3] * eq_const;
+        eq.tmp[1] += eq.address_k_conc_vec[bind_addr3].rstrand[end5][end3] * K_i[0][binding_end3];
+        eq.tmp[2] += eq.address_k_conc_vec[bind_addr3].rstrand[end5][end3] * K_i[1][binding_end3];
 
 
         if (end5 == 0) binding_end5 = 0; //Address F
@@ -184,20 +181,14 @@ namespace primersim{
         // 5' F -> F Strand -> RRC 3'
         eq.tmp[0] += eq.address_k_conc_vec[i].fstrand[end5][end3];
 
-        eq_const = dhds_to_eq_const(eq.address_k_conc_vec[i].tmp_dhds[0][binding_end5], temp_c_profile[cycle-1]);
-        eq.tmp[1] += eq.address_k_conc_vec[bind_addr5].fstrand[end5][end3] * eq_const;
-
-        eq_const = dhds_to_eq_const(eq.address_k_conc_vec[i].tmp_dhds[1][binding_end5], temp_c_profile[cycle-1]);
-        eq.tmp[2] += eq.address_k_conc_vec[bind_addr5].fstrand[end5][end3] * eq_const;
+        eq.tmp[1] += eq.address_k_conc_vec[bind_addr5].fstrand[end5][end3] * K_i[0][binding_end5];
+        eq.tmp[2] += eq.address_k_conc_vec[bind_addr5].fstrand[end5][end3] * K_i[1][binding_end5];
 
         // 3' Binding
         eq.tmp[0] += eq.address_k_conc_vec[i].fstrand[end5][end3];
 
-        eq_const = dhds_to_eq_const(eq.address_k_conc_vec[i].tmp_dhds[0][binding_end3], temp_c_profile[cycle-1]);
-        eq.tmp[1] += eq.address_k_conc_vec[bind_addr3].fstrand[end5][end3] * eq_const;
-
-        eq_const = dhds_to_eq_const(eq.address_k_conc_vec[i].tmp_dhds[1][binding_end3], temp_c_profile[cycle-1]);
-        eq.tmp[2] += eq.address_k_conc_vec[bind_addr3].fstrand[end5][end3] * eq_const;
+        eq.tmp[1] += eq.address_k_conc_vec[bind_addr3].fstrand[end5][end3] * K_i[0][binding_end3];
+        eq.tmp[2] += eq.address_k_conc_vec[bind_addr3].fstrand[end5][end3] * K_i[1][binding_end3];
     }
 
     double Primeanneal::sim_pcr(const char *out_filename, unsigned int addr, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc){
@@ -292,6 +283,20 @@ namespace primersim{
             eq.k[K_RR] = dhds_to_eq_const(eq.address_k_conc_vec[addr].dhds_primer_r_addr_r, temp_c_profile[cycle-1]);
             eq.k[K_FH] = dhds_to_eq_const(dhds_f_hairpin, temp_c_profile[cycle-1]);
             eq.k[K_RH] = dhds_to_eq_const(dhds_r_hairpin, temp_c_profile[cycle-1]);
+
+            // Populate per-address K caches for this cycle. Each value
+            // would otherwise be recomputed 25 times by calc_strand_bindings
+            // and update_strand_concs.
+            for(unsigned int i = 0; i < addresses.size(); i++){
+                auto &kc = eq.address_k_conc_vec[i];
+                for (int p = 0; p < 2; p++)
+                    for (int e = 0; e < 4; e++)
+                        kc.tmp_dhds_K[p][e] = dhds_to_eq_const(kc.tmp_dhds[p][e], temp_c_profile[cycle-1]);
+                kc.dhds_K_primer_f_addr_frc = dhds_to_eq_const(kc.dhds_primer_f_addr_frc, temp_c_profile[cycle-1]);
+                kc.dhds_K_primer_r_addr_frc = dhds_to_eq_const(kc.dhds_primer_r_addr_frc, temp_c_profile[cycle-1]);
+                kc.dhds_K_primer_f_addr_rrc = dhds_to_eq_const(kc.dhds_primer_f_addr_rrc, temp_c_profile[cycle-1]);
+                kc.dhds_K_primer_r_addr_rrc = dhds_to_eq_const(kc.dhds_primer_r_addr_rrc, temp_c_profile[cycle-1]);
+            }
 
             eq.tmp[0] = 0.0; //Total nonspec concentration
             eq.tmp[1] = 0.0; //sum(f primer eq const * partial concentration)

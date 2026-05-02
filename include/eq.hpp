@@ -102,10 +102,26 @@ namespace primersim{
             double dhds_primer_r_addr_frc[2];
             double dhds_primer_r_addr_r[2];
             double dhds_primer_r_addr_rrc[2];
+
+            // Per-cycle cache of dhds_to_eq_const(tmp_dhds[..], temp_c).
+            // Populated once per (address, cycle) in sim_pcr; read by
+            // calc_strand_bindings (25 reads per address per cycle).
+            Real tmp_dhds_K[2][4];
+
+            // Per-cycle cache for the four dhds_primer_*_addr_{frc,rrc}
+            // fields read by update_strand_concs.
+            Real dhds_K_primer_f_addr_frc;
+            Real dhds_K_primer_r_addr_frc;
+            Real dhds_K_primer_f_addr_rrc;
+            Real dhds_K_primer_r_addr_rrc;
     };
 
     class EQ{
         public:
+            // True after the first solve_eq has populated c[F]/c[R].
+            // Subsequent calls warm-start from the prior solution instead
+            // of resetting to c0/2.
+            bool warm_start_valid = false;
             Real last_val[2];
             Real tmp[4];
             Real c[19];

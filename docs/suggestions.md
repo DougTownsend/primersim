@@ -134,34 +134,7 @@ Either remove or guard behind a `verbose` flag.
 
 ## Performance — likely wins
 
-### 10. Cache `dhds_to_eq_const` results
-[src/sim.cpp:166-198](../src/sim.cpp#L166-L198), 285-291
-
-`calc_strand_bindings` is called 25× per address per cycle and
-computes `dhds_to_eq_const` for the same `(address, primer-end,
-primer-end)` pair many times. Hoist the per-cycle dhds → eq_const
-conversions out of the end5/end3 loops into a small precomputed
-table indexed by `[primer_f_or_r][addr_seq_kind]` once per cycle.
-
-The same pattern applies in `eval_thread`'s temp-c loop.
-
-### 11. Warm-start `solve_eq` across PCR cycles
-[src/eq.cpp:57-58](../src/eq.cpp#L57-L58)
-
-```cpp
-c[F] = c0[F] / 2.0;   // discards the previous solution
-c[R] = c0[R] / 2.0;
-calc_cx();
-```
-
-Across PCR cycles `c[F]` and `c[R]` change slowly (primers stay
-mostly free in the active address's case). Skipping this reset and
-reusing the prior solution should drop the outer loop to 1-2
-iterations in steady state. Caveat: `c0[F]` itself changes between
-cycles, so guard with a "first call" flag and re-init when c0
-shifts by more than a tolerance.
-
-### 12. Vectorize `calc_strand_bindings`
+### 10. Vectorize `calc_strand_bindings`
 [src/sim.cpp:134-201](../src/sim.cpp#L134-L201)
 
 The function is called 5×5 = 25 times per address per cycle, each
@@ -176,7 +149,7 @@ and unrolling could yield 2-4× on this hotspot — but profile first.
 
 ## Performance — speculative
 
-### 13. Multi-thread inside `sim_pcr`
+### 11. Multi-thread inside `sim_pcr`
 The current threading parallelizes across addresses (`eval_addresses_thread`,
 [src/sim.cpp:402](../src/sim.cpp#L402)), but a single `sim_pcr` call
 is fully serial. The 5×5 loops over end5/end3 in `update_strand_concs`
@@ -184,7 +157,7 @@ and `calc_strand_bindings` are independent across address index `i`
 — could be parallelized for large address sets. Only worth doing if
 single-address simulation is the bottleneck.
 
-### 14. Profile before tuning further
+### 12. Profile before tuning further
 Most of the items above are at-most-2× wins. Run `perf record ./test_eq`
 on a representative workload first; the hotspot may be in `thal`
 calls during per-cycle dhds setup rather than in the equilibrium
@@ -194,7 +167,7 @@ math, since the FP arithmetic is now native and very fast.
 
 ## Investigations
 
-### 15. Three genuinely failing addresses
+### 13. Three genuinely failing addresses
 After the [k_RH model fix](../src/eq.cpp#L66) (described in
 [docs/precision.md](precision.md)), 3 of 979 addresses still fail
 to amplify symmetrically — addresses 686, 803, 322. They show the
@@ -247,7 +220,7 @@ in the tree:
   "R-stuck" addresses out of 979. Fixed in
   [src/eq.cpp:66](../src/eq.cpp#L66) (k_RH folded into B1) and the
   Jacobian's J11. Post-fix the failure rate is 3/979 ≈ 0.3 % (real
-  primer-design issues; see #15 above).
+  primer-design issues; see #13 above).
 - Build dropped `-lmpfr -lgmp` and the `/share/tuck/dktownse/...`
   paths.
 - Outer-loop convergence in `solve_eq` switched from bit-exact `==`
@@ -258,3 +231,18 @@ in the tree:
   [scripts/compare_csv.py](../scripts/compare_csv.py): 364188/364188
   exact match), but the loop is no longer one-ULP-of-rounding away
   from oscillating up to the 64-iteration cap.
+- `dhds_to_eq_const` results cached per (address, cycle): added
+  `tmp_dhds_K[2][4]` and `dhds_K_primer_*_addr_{frc,rrc}` Real fields
+  to `address_k_conc`, populated once per cycle in `sim_pcr`'s outer
+  loop, read by `calc_strand_bindings` and `update_strand_concs`.
+  Saves ~85 % of the `exp()` calls in the cycle loop. **Wall time
+  impact: ~1.9 %** — the function was already cheap enough that
+  caching barely registered. Output bit-identical to baseline.
+- `solve_eq` warm-starts from the prior solution. Added
+  `bool warm_start_valid = false` to EQ; first call resets
+  `c[F]`/`c[R]` to `c0/2`, subsequent calls reuse the previous
+  solution as the seed for `calc_cx`. Wall-time impact is in the
+  noise (Newton converges in 1-2 outer iters either way); the win is
+  more about the loop being more correct in spirit (we're solving
+  perturbations of a known fixed point) than about speed. Output
+  bit-identical to baseline.
