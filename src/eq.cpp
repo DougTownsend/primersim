@@ -1,44 +1,31 @@
 #include <stdio.h>
 #include <string>
-#include <mpfr.h>
+#include <cmath>
 
 #include "eq.hpp"
 
 namespace primersim{
 
     void EQ::print_state(std::string out_filename, std::string s){
-        int i;
         FILE *outfile = fopen(out_filename.c_str(), "a");
         fprintf(outfile, "%s,", s.c_str());
-        for(i = 0; i < 2; i++)
-            mpfr_fprintf(outfile, "last_val[%d],%.9Re,", i, last_val[i].val);
-        for(i = 0; i < 4; i++)
-            mpfr_fprintf(outfile, "tmp[%d],%.9Re,",i,tmp[i].val);
-        for(i = 0; i < 19; i++)
-            mpfr_fprintf(outfile, "c[%d],%.9Re,",i,c[i].val);
-        for(i = 0; i < 6; i++)
-            mpfr_fprintf(outfile, "c0[%d],%.9Re,",i,c0[i].val);
-        for(i = 0; i < 13; i++)
-            mpfr_fprintf(outfile, "k[%d],%.9Re,",i,k[i].val);
-        mpfr_fprintf(outfile, "spec_exp,%.9Re,",spec_fwd_amp.val);
-        mpfr_fprintf(outfile, "spec_lin,%.9Re,",spec_rev_amp.val);
-        mpfr_fprintf(outfile, "nonspec_exp,%.9Re,",nonspec_exp_amp.val);
-        mpfr_fprintf(outfile, "nonspec_lin%.9Re,",nonspec_lin_amp.val);
-        mpfr_fprintf(outfile, "best_spec_exp,%.9Re,",best_spec_exp_amp.val);
-        mpfr_fprintf(outfile, "best_spec_lin,%.9Re,",best_spec_lin_amp.val);
-        mpfr_fprintf(outfile, "best_nonspec_exp,%.9Re,",best_nonspec_exp_amp.val);
-        mpfr_fprintf(outfile, "best_nonspec_lin,%.9Re\n",best_nonspec_lin_amp.val);
+        for(int i = 0; i < 2; i++)
+            fprintf(outfile, "last_val[%d],%.9Le,", i, (long double)last_val[i]);
+        for(int i = 0; i < 4; i++)
+            fprintf(outfile, "tmp[%d],%.9Le,", i, (long double)tmp[i]);
+        for(int i = 0; i < 10; i++)
+            fprintf(outfile, "c[%d],%.9Le,", i, (long double)c[i]);
+        for(int i = 0; i < 3; i++)
+            fprintf(outfile, "c0[%d],%.9Le,", i, (long double)c0[i]);
+        for(int i = 0; i < 7; i++)
+            fprintf(outfile, "k[%d],%.9Le,", i, (long double)k[i]);
+        fprintf(outfile, "\n");
         fclose(outfile);
     }
 
-    //c[F], c[R], c0[:], and k[:] must be defined
     void EQ::calc_cx(){
-        //c[X] = c0[X] / (1 + k[K_FX]*c[F] + k[K_RX]*c[R])
-        tmp[2].mul(k[K_FX], c[F]);
-        tmp[3].mul(k[K_RX], c[R]);
-        tmp[2].add(tmp[2], tmp[3]);
-        tmp[2].add_d(tmp[2], 1.0);
-        c[X].div(c0[X], tmp[2]);
+        // c[X] = c0[X] / (1 + k_FX*c[F] + k_RX*c[R])
+        c[X] = c0[X] / (1.0 + k[K_FX]*c[F] + k[K_RX]*c[R]);
     }
 
     void EQ::calc_bound_concs(){
@@ -56,17 +43,16 @@ namespace primersim{
     // outer loop refreshes c[X] = c0[X] / (1 + k_FX*c[F] + k_RX*c[R]) until
     // c[F] and c[R] stop changing.
     void EQ::solve_eq(){
-        constexpr int max_iter_outer = FLOAT_PREC * 2;
+        constexpr int max_iter_outer = 64;
         constexpr int max_iter = 15;
 
-        Psim_f B1, B2;
-        Psim_f f, r;
-        Psim_f F1, F2;
-        Psim_f J11, J12, J21, J22;
-        Psim_f det, df, dr;
-        Psim_f f_new, r_new;
-        Psim_f tmp1, tmp2;
-        Psim_f prev_res;
+        Real B1, B2;
+        Real f, r;
+        Real F1, F2;
+        Real J11, J12, J21, J22;
+        Real det, df, dr;
+        Real f_new, r_new;
+        Real residual, prev_res;
 
         c[F] = c0[F] / 2.0;
         c[R] = c0[R] / 2.0;
@@ -75,32 +61,28 @@ namespace primersim{
         last_val[R] = c[R];
 
         for (int outer = 0; outer < max_iter_outer; ++outer) {
-            mpfr_set_inf(prev_res.val, 1);
+            prev_res = std::numeric_limits<Real>::infinity();
 
-            B1 = k[K_RX]*c[X] + 1.0;
+            B1 = k[K_RX]*c[X] + k[K_RH] + 1.0;
             B2 = k[K_FX]*c[X] + k[K_FH] + 1.0;
 
-            // Decoupled initial guesses (exact when k_FR = K_RH = 0)
-            mpfr_sqrt(tmp1.val, (B2*B2 + k[K_FF]*c0[F]*8.0).val, MPFR_RNDN);
-            f = (B2*(-1.0) + tmp1) / (k[K_FF]*4.0);
-            mpfr_sqrt(tmp1.val, (B1*B1 + k[K_RR]*c0[R]*8.0).val, MPFR_RNDN);
-            r = (B1*(-1.0) + tmp1) / (k[K_RR]*4.0);
+            // Decoupled initial guesses (exact when k_FR = 0)
+            f = (-B2 + std::sqrt(B2*B2 + 8.0*k[K_FF]*c0[F])) / (4.0*k[K_FF]);
+            r = (-B1 + std::sqrt(B1*B1 + 8.0*k[K_RR]*c0[R])) / (4.0*k[K_RR]);
 
             for (int iter = 0; iter < max_iter; ++iter) {
-                F1 = k[K_RR]*r*r*2.0 + (B1 + k[K_FR]*f)*r + k[K_RH]*f - c0[R];
-                F2 = k[K_FF]*f*f*2.0 + (B2 + k[K_FR]*r)*f - c0[F];
+                F1 = 2.0*k[K_RR]*r*r + (B1 + k[K_FR]*f)*r - c0[R];
+                F2 = 2.0*k[K_FF]*f*f + (B2 + k[K_FR]*r)*f - c0[F];
 
                 // Stop when residual stops decreasing — that's the precision
-                // floor of mpfr arithmetic; further iterations can't improve it.
-                mpfr_abs(tmp1.val, F1.val, MPFR_RNDN);
-                mpfr_abs(tmp2.val, F2.val, MPFR_RNDN);
-                mpfr_add(tmp1.val, tmp1.val, tmp2.val, MPFR_RNDN);
-                if (tmp1.cmp(prev_res) >= 0) break;
-                mpfr_set(prev_res.val, tmp1.val, MPFR_RNDN);
+                // floor of Real arithmetic.
+                residual = std::fabs(F1) + std::fabs(F2);
+                if (residual >= prev_res) break;
+                prev_res = residual;
 
-                J11 = k[K_RH] + k[K_FR]*r;
-                J12 = k[K_RR]*r*4.0 + B1 + k[K_FR]*f;
-                J21 = k[K_FF]*f*4.0 + B2 + k[K_FR]*r;
+                J11 = k[K_FR]*r;
+                J12 = 4.0*k[K_RR]*r + B1 + k[K_FR]*f;
+                J21 = 4.0*k[K_FF]*f + B2 + k[K_FR]*r;
                 J22 = k[K_FR]*f;
 
                 det = J11*J22 - J12*J21;
@@ -110,10 +92,10 @@ namespace primersim{
                 f_new = f + df;
                 r_new = r + dr;
 
-                if      (f_new.cmp_d(0.0) < 0) f_new = f*0.5;
-                else if (f_new.cmp(c0[F]) > 0) f_new = (f + c0[F])*0.5;
-                if      (r_new.cmp_d(0.0) < 0) r_new = r*0.5;
-                else if (r_new.cmp(c0[R]) > 0) r_new = (r + c0[R])*0.5;
+                if      (f_new < 0.0)    f_new = f * 0.5;
+                else if (f_new > c0[F])   f_new = (f + c0[F]) * 0.5;
+                if      (r_new < 0.0)    r_new = r * 0.5;
+                else if (r_new > c0[R])   r_new = (r + c0[R]) * 0.5;
 
                 f = f_new;
                 r = r_new;
@@ -123,7 +105,13 @@ namespace primersim{
             c[R] = r;
             calc_cx();
 
-            if (!c[F].cmp(last_val[F]) && !c[R].cmp(last_val[R]))
+            // Stop when c[F] and c[R] both stop moving by more than a few
+            // ulps. 16*epsilon gives a relative tolerance of ~3.6e-15 for
+            // double, ~1.7e-18 for long double — well below the ~5e-10
+            // precision floor of the %.9 output format.
+            constexpr Real conv_eps = 16 * std::numeric_limits<Real>::epsilon();
+            if (std::fabs(c[F] - last_val[F]) <= conv_eps * std::fabs(c[F]) &&
+                std::fabs(c[R] - last_val[R]) <= conv_eps * std::fabs(c[R]))
                 break;
             last_val[F] = c[F];
             last_val[R] = c[R];

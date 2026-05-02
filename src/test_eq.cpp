@@ -1,11 +1,11 @@
 #include <stdio.h>
 #include <iostream>
-#include <mpfr.h>
 #include "eq.hpp"
 
 void random_address_assignment(primersim::Primeanneal &pa, int count);
 
 int main(void){
+    char regression_fname[] = "regression_new.csv";
     primersim::Primeanneal pa;
     pa.num_cpu = 32;
     //double temp_c = 60;
@@ -14,7 +14,8 @@ int main(void){
     double mv = 100;
     double dv = 1.5;
     double dntp = 0.2;
-
+    FILE *f_tmp = fopen(regression_fname, "w"); //clear the regression file
+    fclose(f_tmp);
     //pa.read_primers_individual("./codes.csv");
     //pa.assign_addresses("addresses_new.csv", 60, mv, dv, dntp);
     //pa.evaluate_addresses("addresses.csv", "sort_eval.csv", dna_conc, primer_conc, mv, dv, dntp);
@@ -33,8 +34,12 @@ int main(void){
     pa.read_addresses("addresses.csv", false);
     std::cout << pa.addresses.size() << "\n";
     //random_address_assignment(pa, 1);
-
-    pa.sim_pcr("regression_new.csv", 0, temps.size(), temps, dna_conc, primer_conc, primer_conc, mv, dv, dntp);
+    for (size_t i = 0; i < pa.addresses.size(); i++){
+        FILE *regfile = fopen(regression_fname, "a");
+        fprintf(regfile, "\nSimulating address %lu\n", i);
+        fclose(regfile);
+        pa.sim_pcr("regression_new.csv", i, temps.size(), temps, dna_conc, primer_conc, primer_conc, mv, dv, dntp);
+    }
     //printf("%03u: %e\n", i, ratio);
     /*
     for (double power = -20; power < -5.5; power += 1.){

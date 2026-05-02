@@ -4,7 +4,7 @@
 #include <string.h>
 #include <string>
 #include <stdlib.h>
-#include <mpfr.h>
+#include <cmath>
 #include <algorithm>
 #include <thread>
 
@@ -19,17 +19,15 @@ namespace primersim{
         return log(eq_const) * (-ideal_gas_constant*temp_k);
     }
 
-    void Primeanneal::dg_to_eq_const_mpfr(Psim_f &ret, double dg, double temp_c){
+    void Primeanneal::dg_to_eq_const_mpfr(Real &ret, double dg, double temp_c){
         double temp_k = temp_c + 273.15;
-        ret.set_d(dg / (-1.98720425864083 * temp_k));
-        ret.exp(ret);
+        ret = std::exp((Real)(dg / (-1.98720425864083 * temp_k)));
     }
 
-    double Primeanneal::eq_const_to_dg_mpfr(Psim_f &tmp, Psim_f &eq_const, double temp_c){
+    double Primeanneal::eq_const_to_dg_mpfr(Real &tmp, Real &eq_const, double temp_c){
         double temp_k = temp_c + 273.15;
-        tmp.log(eq_const);
-        tmp.mul_d(tmp, -1.98720425864083 * temp_k);
-        return tmp.get_d();
+        tmp = std::log(eq_const) * (Real)(-1.98720425864083 * temp_k);
+        return (double)tmp;
     }
 
     void Primeanneal::read_primers_individual(std::string filename){
@@ -157,8 +155,6 @@ namespace primersim{
         EQ eq;
         eq.c0[F] = primer_conc;
         eq.c0[R] = primer_conc;
-        //eq.c0[A].set_d(dna_conc / addresses.size());
-        //eq.c0[B].set_d(dna_conc / addresses.size());
         thal_results o;
         thal_args ta;
         set_thal_default_args(&ta);
@@ -261,22 +257,21 @@ namespace primersim{
                 eq.k[K_RX] = 0.;
                 int count = 0;
                 for(unsigned int j = 0; j < addresses.size(); j++){
-                    eq.k[K_FX] = eq.k[K_FX] + dg_to_eq_const(dh_ds[j].f_f_dh - (dh_ds[j].f_f_ds * (temp_c + 273.15)), temp_c);
-                    eq.k[K_RX] = eq.k[K_RX] + dg_to_eq_const(dh_ds[j].r_f_dh - (dh_ds[j].r_f_ds * (temp_c + 273.15)), temp_c);
+                    eq.k[K_FX] += dg_to_eq_const(dh_ds[j].f_f_dh - (dh_ds[j].f_f_ds * (temp_c + 273.15)), temp_c);
+                    eq.k[K_RX] += dg_to_eq_const(dh_ds[j].r_f_dh - (dh_ds[j].r_f_ds * (temp_c + 273.15)), temp_c);
                     count++;
 
-                    eq.k[K_FX] = eq.k[K_FX] + dg_to_eq_const(dh_ds[j].f_frc_dh - (dh_ds[j].f_frc_ds * (temp_c + 273.15)), temp_c);
-                    eq.k[K_RX] = eq.k[K_RX] + dg_to_eq_const(dh_ds[j].r_frc_dh - (dh_ds[j].r_frc_ds * (temp_c + 273.15)), temp_c);
+                    eq.k[K_FX] += dg_to_eq_const(dh_ds[j].f_frc_dh - (dh_ds[j].f_frc_ds * (temp_c + 273.15)), temp_c);
+                    eq.k[K_RX] += dg_to_eq_const(dh_ds[j].r_frc_dh - (dh_ds[j].r_frc_ds * (temp_c + 273.15)), temp_c);
                     count++;
 
-                    eq.k[K_FX] = eq.k[K_FX] + dg_to_eq_const(dh_ds[j].f_r_dh - (dh_ds[j].f_r_ds * (temp_c + 273.15)), temp_c);
-                    eq.k[K_RX] = eq.k[K_RX] + dg_to_eq_const(dh_ds[j].r_r_dh - (dh_ds[j].r_r_ds * (temp_c + 273.15)), temp_c);
+                    eq.k[K_FX] += dg_to_eq_const(dh_ds[j].f_r_dh - (dh_ds[j].f_r_ds * (temp_c + 273.15)), temp_c);
+                    eq.k[K_RX] += dg_to_eq_const(dh_ds[j].r_r_dh - (dh_ds[j].r_r_ds * (temp_c + 273.15)), temp_c);
                     count++;
 
-                    eq.k[K_FX] = eq.k[K_FX] + dg_to_eq_const(dh_ds[j].f_rrc_dh - (dh_ds[j].f_rrc_ds * (temp_c + 273.15)), temp_c);
-                    eq.k[K_RX] = eq.k[K_RX] + dg_to_eq_const(dh_ds[j].r_rrc_dh - (dh_ds[j].r_rrc_ds * (temp_c + 273.15)), temp_c);
+                    eq.k[K_FX] += dg_to_eq_const(dh_ds[j].f_rrc_dh - (dh_ds[j].f_rrc_ds * (temp_c + 273.15)), temp_c);
+                    eq.k[K_RX] += dg_to_eq_const(dh_ds[j].r_rrc_dh - (dh_ds[j].r_rrc_ds * (temp_c + 273.15)), temp_c);
                     count++;
-
                 }
                 eq.k[K_FX] = eq.k[K_FX] / count;
                 eq.k[K_RX] = eq.k[K_RX] / count;
@@ -284,41 +279,44 @@ namespace primersim{
                 //c[F] and c[R] are now solved, all nonspec concs can now be solved individually
 
                 //Set c[X] to concs of individual strands
-                eq.c0[X].set_d(dna_conc / addresses.size());
+                eq.c0[X] = dna_conc / addresses.size();
                 for (unsigned int j = 0; j < addresses.size(); j++){
                     if (i == j)
                         continue;
-                    eq.k[K_FX].set_d(dg_to_eq_const(dh_ds[j].f_frc_dh - (dh_ds[j].f_frc_ds * (temp_c + 273.15)), temp_c));
-                    eq.k[K_RX].set_d(dg_to_eq_const(dh_ds[j].r_frc_dh - (dh_ds[j].r_frc_ds * (temp_c + 273.15)), temp_c));
+                    eq.k[K_FX] = dg_to_eq_const(dh_ds[j].f_frc_dh - (dh_ds[j].f_frc_ds * (temp_c + 273.15)), temp_c);
+                    eq.k[K_RX] = dg_to_eq_const(dh_ds[j].r_frc_dh - (dh_ds[j].r_frc_ds * (temp_c + 273.15)), temp_c);
                     eq.calc_cx();
                     eq.calc_bound_concs();
 
                     //nonspec_exp_amp += min(fwd bound, rev bound)
-                    eq.tmp[0].add(eq.c[FX], eq.c[RX]);
-                    eq.tmp[2].min(eq.tmp[0], eq.tmp[1]);
-                    eq.nonspec_exp_amp.add(eq.nonspec_exp_amp, eq.tmp[2]);
+                    eq.tmp[0] = eq.c[FX] + eq.c[RX];
+                    eq.tmp[2] = std::fmin(eq.tmp[0], eq.tmp[1]);
+                    eq.nonspec_exp_amp += eq.tmp[2];
 
                     //nonspec_lin_amp += max(fwd bound, rev bound) - min(fwd bound, rev bound)
-                    eq.tmp[0].max(eq.tmp[0], eq.tmp[1]);
-                    eq.tmp[2].sub(eq.tmp[0], eq.tmp[2]);
-                    eq.nonspec_lin_amp.add(eq.nonspec_lin_amp, eq.tmp[2]);
+                    eq.tmp[0] = std::fmax(eq.tmp[0], eq.tmp[1]);
+                    eq.tmp[2] = eq.tmp[0] - eq.tmp[2];
+                    eq.nonspec_lin_amp += eq.tmp[2];
                 }
-                eq.tmp[0].div(eq.spec_fwd_amp, eq.nonspec_exp_amp);
-                eq.tmp[1].div(eq.best_spec_exp_amp, eq.best_nonspec_exp_amp);
-                if(first || (eq.tmp[0].cmp(eq.tmp[1]) > 0)){
+                eq.tmp[0] = eq.spec_fwd_amp / eq.nonspec_exp_amp;
+                eq.tmp[1] = eq.best_spec_exp_amp / eq.best_nonspec_exp_amp;
+                if(first || (eq.tmp[0] > eq.tmp[1])){
                     first = false;
                     best_temp = temp_c;
-                    eq.best_spec_exp_amp.set(eq.spec_fwd_amp);
-                    eq.best_spec_lin_amp.set(eq.spec_rev_amp);
-                    eq.best_nonspec_exp_amp.set(eq.nonspec_exp_amp);
-                    eq.best_nonspec_lin_amp.set(eq.nonspec_lin_amp);
+                    eq.best_spec_exp_amp = eq.spec_fwd_amp;
+                    eq.best_spec_lin_amp = eq.spec_rev_amp;
+                    eq.best_nonspec_exp_amp = eq.nonspec_exp_amp;
+                    eq.best_nonspec_lin_amp = eq.nonspec_lin_amp;
                 }
             }
-            eq.tmp[0].div(eq.best_spec_exp_amp, eq.best_nonspec_exp_amp);
-            eq.tmp[1].div(eq.best_spec_lin_amp, eq.best_nonspec_lin_amp);
+            eq.tmp[0] = eq.best_spec_exp_amp / eq.best_nonspec_exp_amp;
+            eq.tmp[1] = eq.best_spec_lin_amp / eq.best_nonspec_lin_amp;
             outfile_mtx.lock();
             FILE *outfile = fopen(out_filename, "a");
-            mpfr_fprintf(outfile, "%s,%s,%lf,%u,%.9Re,%.9Re,%.9Re,%.9Re,%.9Re,%.9Re\n",addresses[i].f, addresses[i].r, best_temp, i, eq.tmp[0].val, eq.tmp[1].val, eq.best_spec_exp_amp.val, eq.best_nonspec_exp_amp.val, eq.best_spec_lin_amp.val, eq.best_nonspec_lin_amp.val);
+            fprintf(outfile, "%s,%s,%lf,%u,%.9Le,%.9Le,%.9Le,%.9Le,%.9Le,%.9Le\n", addresses[i].f, addresses[i].r, best_temp, i,
+                    (long double)eq.tmp[0], (long double)eq.tmp[1],
+                    (long double)eq.best_spec_exp_amp, (long double)eq.best_nonspec_exp_amp,
+                    (long double)eq.best_spec_lin_amp, (long double)eq.best_nonspec_lin_amp);
             fclose(outfile);
             outfile_mtx.unlock();
         }
@@ -326,7 +324,7 @@ namespace primersim{
 
     void Primeanneal::evaluate_addresses(const char *in_filename, const char * out_filename, double dna_conc, double primer_conc, double mv_conc, double dv_conc, double dntp_conc){
         if(addresses.size() == 0)
-            read_addresses(in_filename, dna_conc);
+            read_addresses(in_filename, false);
         //Clear the outfile
         FILE *outfile = fopen(out_filename, "w");
         fclose(outfile);

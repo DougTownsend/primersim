@@ -3,7 +3,6 @@
 #include <vector>
 #include <string.h>
 #include <stdlib.h>
-#include <mpfr.h>
 #include <thread>
 
 #include "thal.h"
@@ -66,7 +65,7 @@ namespace primersim{
     }
 
     void Primeanneal::read_addresses(const char *filename, bool with_temp_c = false){
-        addresses.clear(); //TODO: Fix potential memory leak here.
+        addresses.clear();
         FILE *infile = fopen(filename, "r");
         address a;
         char tmp_f[100];
@@ -119,13 +118,12 @@ namespace primersim{
         eq.address_k_conc_vec[i].fstrand_change[primerr][end5_rc] += eq.c[RX];
 
         //F Strand Bindings
-        //[0][0]
         eq.c0[X] = eq.address_k_conc_vec[i].fstrand[end5][end3];
         eq.k[K_FX] = dhds_to_eq_const(eq.address_k_conc_vec[bind_addr].dhds_primer_f_addr_rrc, temp_c_profile[cycle-1]);
         eq.k[K_RX] = dhds_to_eq_const(eq.address_k_conc_vec[bind_addr].dhds_primer_r_addr_rrc, temp_c_profile[cycle-1]);
         eq.calc_cx();
         eq.calc_bound_concs();
-        //Remove bound primer from primer concnetration
+        //Remove bound primer from primer concentration
         eq.c0[F] -= eq.c[FX];
         eq.c0[R] -= eq.c[RX];
         //Add to concentration of elongated strand
@@ -134,18 +132,10 @@ namespace primersim{
     }
 
     void Primeanneal::calc_strand_bindings(EQ &eq, const std::vector<double> &temp_c_profile, int i, int cycle, int addr, int end5, int end3){
-        //will be args
-        //int end5 = 0;
-        //int end3 = 0;
         double eq_const;
-        //dhds indicies
-        int bind_addr5;
-        int bind_addr3;
-        if (end5 == 0) bind_addr5 = i;
-        else bind_addr5 = addr;
-        if (end3 == 0) bind_addr3 = i;
-        else bind_addr3 = addr;
-        //primer f to 5' end
+        int bind_addr5 = (end5 == 0) ? i : addr;
+        int bind_addr3 = (end3 == 0) ? i : addr;
+
         int binding_end5 = 0;
         switch(end5){
             case 0: binding_end5 = 2; break; //binding to R of target addr
@@ -157,25 +147,20 @@ namespace primersim{
         }
         int binding_end3 = 0;
         switch(end3){
-            case 0: binding_end3 = 1; break; //binding to R of target addr
-            case 1: binding_end3 = 0; break; //binding to primer F
-            case 2: binding_end3 = 1; break; //binding to primer FRC
-            case 3: binding_end3 = 2; break; //binding to primer R
-            case 4: binding_end3 = 3; break; //binding to primer RRC
+            case 0: binding_end3 = 1; break;
+            case 1: binding_end3 = 0; break;
+            case 2: binding_end3 = 1; break;
+            case 3: binding_end3 = 2; break;
+            case 4: binding_end3 = 3; break;
             default: break;
         }
 
-        // calc c[F] and c[R]
-        // eq.tmp[0] will hold the sum of the nonspecific concentrations
-        // eq.tmp[1] will hold the sum of (nonspec_conc * nonspec_k_f)
-        // eq.tmp[2] will hold the sum of (nonspec_conc * nonspec_k_r)
-        // eq.tmp[1] / eq.tmp[0] is average nonspec k for forward primer
-        // eq.tmp[2] / eq.tmp[0] is average nonspec k for reverse primer
-        // eq/tmp[3] will hold partial results
-        // Reverse strand bindings:
+        // tmp[0] = sum of nonspecific concentrations
+        // tmp[1] = sum(f primer eq const * partial concentration)
+        // tmp[2] = sum(r primer eq const * partial concentration)
 
-        // 5' R -> R Strand -> FRC 3' [0][0]
-        // 5' binding
+        // Reverse strand bindings
+        // 5' R -> R Strand -> FRC 3'
         eq.tmp[0] += eq.address_k_conc_vec[i].rstrand[end5][end3];
 
         eq_const = dhds_to_eq_const(eq.address_k_conc_vec[i].tmp_dhds[0][binding_end5], temp_c_profile[cycle - 1]);
@@ -194,11 +179,9 @@ namespace primersim{
         eq.tmp[2] += eq.address_k_conc_vec[bind_addr3].rstrand[end5][end3] * eq_const;
 
 
-
         if (end5 == 0) binding_end5 = 0; //Address F
         if (end3 == 0) binding_end3 = 3; //Address RRC
-        // 5' F -> F Strand -> RRC 3' [0][0]
-        //5' binding
+        // 5' F -> F Strand -> RRC 3'
         eq.tmp[0] += eq.address_k_conc_vec[i].fstrand[end5][end3];
 
         eq_const = dhds_to_eq_const(eq.address_k_conc_vec[i].tmp_dhds[0][binding_end5], temp_c_profile[cycle-1]);
@@ -207,7 +190,7 @@ namespace primersim{
         eq_const = dhds_to_eq_const(eq.address_k_conc_vec[i].tmp_dhds[1][binding_end5], temp_c_profile[cycle-1]);
         eq.tmp[2] += eq.address_k_conc_vec[bind_addr5].fstrand[end5][end3] * eq_const;
 
-        //3' Binding
+        // 3' Binding
         eq.tmp[0] += eq.address_k_conc_vec[i].fstrand[end5][end3];
 
         eq_const = dhds_to_eq_const(eq.address_k_conc_vec[i].tmp_dhds[0][binding_end3], temp_c_profile[cycle-1]);
@@ -218,8 +201,6 @@ namespace primersim{
     }
 
     double Primeanneal::sim_pcr(const char *out_filename, unsigned int addr, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc){
-        //addresses.clear();
-        //read_addresses(in_filename, true);
         EQ eq;
         thal_args ta;
         thal_results o;
@@ -227,16 +208,14 @@ namespace primersim{
         ta.mv = mv_conc;
         ta.dv = dv_conc;
         ta.dntp = dntp_conc;
-        //ta.temp = 273.15 + addresses[addr].temp_c;
         ta.temp = 273.15 + 55;
-        //double temp_c = addresses[addr].temp_c;
         eq.address_k_conc_vec.resize(addresses.size());
-        eq.last_nonspec_frc_total = 0.;
-        eq.last_nonspec_rrc_total = 0.;
+        eq.last_nonspec_frc_total = 0.0;
+        eq.last_nonspec_rrc_total = 0.0;
 
         for(unsigned int i = 0; i < addresses.size(); i++){
-            eq.address_k_conc_vec[i].fstrand[0][0] = dna_conc / addresses.size();
-            eq.address_k_conc_vec[i].rstrand[0][0] = dna_conc / addresses.size();
+            eq.address_k_conc_vec[i].fstrand[0][0] = (Real)dna_conc / addresses.size();
+            eq.address_k_conc_vec[i].rstrand[0][0] = (Real)dna_conc / addresses.size();
             for(int ii = 0; ii < 5; ii++){
                 for(int jj = 0; jj < 5; jj++){
                     if (!jj && !ii)
@@ -257,35 +236,27 @@ namespace primersim{
             o = calc_dimer(addresses[addr].f, addresses[i].f, ta);
             eq.address_k_conc_vec[i].dhds_primer_f_addr_f[dh] = o.dh;
             eq.address_k_conc_vec[i].dhds_primer_f_addr_f[ds] = o.ds;
-            //eq.address_k_conc_vec[i].k_primer_f_addr_f.set_d(dg_to_eq_const(o.dg, temp_c));
             o = calc_dimer(addresses[addr].f, addresses[i].f_rc, ta);
             eq.address_k_conc_vec[i].dhds_primer_f_addr_frc[dh] = o.dh;
             eq.address_k_conc_vec[i].dhds_primer_f_addr_frc[ds] = o.ds;
-            //eq.address_k_conc_vec[i].k_primer_f_addr_frc.set_d(dg_to_eq_const(o.dg, temp_c));
             o = calc_dimer(addresses[addr].f, addresses[i].r, ta);
             eq.address_k_conc_vec[i].dhds_primer_f_addr_r[dh] = o.dh;
             eq.address_k_conc_vec[i].dhds_primer_f_addr_r[ds] = o.ds;
-            //eq.address_k_conc_vec[i].k_primer_f_addr_r.set_d(dg_to_eq_const(o.dg, temp_c));
             o = calc_dimer(addresses[addr].f, addresses[i].r_rc, ta);
             eq.address_k_conc_vec[i].dhds_primer_f_addr_rrc[dh] = o.dh;
             eq.address_k_conc_vec[i].dhds_primer_f_addr_rrc[ds] = o.ds;
-            //eq.address_k_conc_vec[i].k_primer_f_addr_rrc.set_d(dg_to_eq_const(o.dg, temp_c));
             o = calc_dimer(addresses[addr].r, addresses[i].f, ta);
             eq.address_k_conc_vec[i].dhds_primer_r_addr_f[dh] = o.dh;
             eq.address_k_conc_vec[i].dhds_primer_r_addr_f[ds] = o.ds;
-            //eq.address_k_conc_vec[i].k_primer_r_addr_f.set_d(dg_to_eq_const(o.dg, temp_c));
             o = calc_dimer(addresses[addr].r, addresses[i].f_rc, ta);
             eq.address_k_conc_vec[i].dhds_primer_r_addr_frc[dh] = o.dh;
             eq.address_k_conc_vec[i].dhds_primer_r_addr_frc[ds] = o.ds;
-            //eq.address_k_conc_vec[i].k_primer_r_addr_frc.set_d(dg_to_eq_const(o.dg, temp_c));
             o = calc_dimer(addresses[addr].r, addresses[i].r, ta);
             eq.address_k_conc_vec[i].dhds_primer_r_addr_r[dh] = o.dh;
             eq.address_k_conc_vec[i].dhds_primer_r_addr_r[ds] = o.ds;
-            //eq.address_k_conc_vec[i].k_primer_r_addr_r.set_d(dg_to_eq_const(o.dg, temp_c));
             o = calc_dimer(addresses[addr].r, addresses[i].r_rc, ta);
             eq.address_k_conc_vec[i].dhds_primer_r_addr_rrc[dh] = o.dh;
             eq.address_k_conc_vec[i].dhds_primer_r_addr_rrc[ds] = o.ds;
-            //eq.address_k_conc_vec[i].k_primer_r_addr_rrc.set_d(dg_to_eq_const(o.dg, temp_c));
         }
 
         double dhds_f_hairpin[2];
@@ -302,39 +273,29 @@ namespace primersim{
         eq.c0[R] = primer_r_conc;
 
         if(out_filename != NULL){
-            FILE *outfile = fopen(out_filename, "w");
-            //cycle,f_primer,r_primer,spec_f,spec_r,nonspec_f,nonspec_r
-            mpfr_fprintf(outfile, "%02u,%lf,0.000000000,0.000000000,%.9Re,%.9Re,%.9Re,%.9Re", 0, temp_c_profile[0], eq.c0[F].val, eq.c0[R].val, eq.address_k_conc_vec[addr].fstrand[addr_end][addr_end].val, eq.address_k_conc_vec[addr].rstrand[addr_end][addr_end].val);
-            eq.tmp[0] = 0.;
-            eq.tmp[1] = 0.;
+            FILE *outfile = fopen(out_filename, "a");
+            fprintf(outfile, "%02u,%lf,0.000000000,0.000000000,%.9Le,%.9Le,%.9Le,%.9Le", 0, temp_c_profile[0], (long double)eq.c0[F], (long double)eq.c0[R], (long double)eq.address_k_conc_vec[addr].fstrand[addr_end][addr_end], (long double)eq.address_k_conc_vec[addr].rstrand[addr_end][addr_end]);
+            eq.tmp[0] = 0.0;
+            eq.tmp[1] = 0.0;
             for(unsigned int i = 0; i < addresses.size(); i++){
                 if (i == addr)
                     continue;
-                eq.tmp[0] = eq.tmp[0] + eq.address_k_conc_vec[i].fstrand[addr_end][addr_end];
-                eq.tmp[1] = eq.tmp[1] + eq.address_k_conc_vec[i].rstrand[addr_end][addr_end];
+                eq.tmp[0] += eq.address_k_conc_vec[i].fstrand[addr_end][addr_end];
+                eq.tmp[1] += eq.address_k_conc_vec[i].rstrand[addr_end][addr_end];
             }
-            mpfr_fprintf(outfile, ",%.9Re,0.000000000,%.9Re,0.000000000\n", eq.tmp[0].val, eq.tmp[1].val);
+            fprintf(outfile, ",%.9Le,0.000000000,%.9Le,0.000000000\n", (long double)eq.tmp[0], (long double)eq.tmp[1]);
             fclose(outfile);
         }
         for(unsigned int cycle = 1; cycle <= pcr_cycles; cycle++){
-            //calc c[F] and c[R]
-            //eq.tmp[0] will hold the sum of the nonspecific concentrations
-            //eq.tmp[1] will hold the sum of (nonspec_conc * nonspec_k_f)
-            //eq.tmp[2] will hold the sum of (nonspec_conc * nonspec_k_r)
-            //eq.tmp[1] / eq.tmp[0] is average nonspec k for forward primer
-            //eq.tmp[2] / eq.tmp[0] is average nonspec k for reverse primer
-            //eq/tmp[3] will hold partial results
-
-            //Set the eq constant of all specific bindings, primer dimers, and primer hairpins
             eq.k[K_FF] = dhds_to_eq_const(eq.address_k_conc_vec[addr].dhds_primer_f_addr_f, temp_c_profile[cycle-1]);
             eq.k[K_FR] = dhds_to_eq_const(eq.address_k_conc_vec[addr].dhds_primer_f_addr_r, temp_c_profile[cycle-1]);
             eq.k[K_RR] = dhds_to_eq_const(eq.address_k_conc_vec[addr].dhds_primer_r_addr_r, temp_c_profile[cycle-1]);
             eq.k[K_FH] = dhds_to_eq_const(dhds_f_hairpin, temp_c_profile[cycle-1]);
             eq.k[K_RH] = dhds_to_eq_const(dhds_r_hairpin, temp_c_profile[cycle-1]);
 
-            eq.tmp[0] = 0.;//Total concentration
-            eq.tmp[1] = 0.;//sum(f primer eq const * partial concentration)
-            eq.tmp[2] = 0.;//sum(r primer eq const * partial concentration)
+            eq.tmp[0] = 0.0; //Total nonspec concentration
+            eq.tmp[1] = 0.0; //sum(f primer eq const * partial concentration)
+            eq.tmp[2] = 0.0; //sum(r primer eq const * partial concentration)
 
             for(unsigned int i = 0; i < addresses.size(); i++){
                 for(int end5 = 0; end5 < 5; end5++){
@@ -344,30 +305,26 @@ namespace primersim{
                 }
             }
             //Set k[K_FX] and k[K_RX] to average eq constant
-            eq.k[K_FX].div(eq.tmp[1], eq.tmp[0]);
-            eq.k[K_RX].div(eq.tmp[2], eq.tmp[0]);
-            //All k values now set
+            eq.k[K_FX] = eq.tmp[1] / eq.tmp[0];
+            eq.k[K_RX] = eq.tmp[2] / eq.tmp[0];
 
-            //Set initial concentrations
-            //c0[F] and c0[R] are set by previous iteration or initialized before the loop
-            //eq.tmp[0] still holds the total nonspecific concentration
-            eq.c0[X].set(eq.tmp[0]);
-            //All initial concs now set
+            //tmp[0] still holds the total nonspecific concentration
+            eq.c0[X] = eq.tmp[0];
 
             eq.solve_eq();
 
-            //Now solve individual nonspecific concentrations and update c0 for next cycle
+            //Solve individual nonspecific concentrations and update c0 for next cycle
             for(unsigned int i = 0; i < addresses.size(); i++){
-                eq.address_k_conc_vec[i].last_f_conc.set_d(0.0);
-                eq.address_k_conc_vec[i].last_r_conc.set_d(0.0);
+                eq.address_k_conc_vec[i].last_f_conc = 0.0;
+                eq.address_k_conc_vec[i].last_r_conc = 0.0;
 
                 for(int ii = 0; ii < 5; ii++){
                     for(int jj = 0; jj < 5; jj++){
-                        eq.address_k_conc_vec[i].last_f_conc.add(eq.address_k_conc_vec[i].last_f_conc, eq.address_k_conc_vec[i].fstrand[ii][jj]);
-                        eq.address_k_conc_vec[i].last_r_conc.add(eq.address_k_conc_vec[i].last_r_conc, eq.address_k_conc_vec[i].rstrand[ii][jj]);
+                        eq.address_k_conc_vec[i].last_f_conc += eq.address_k_conc_vec[i].fstrand[ii][jj];
+                        eq.address_k_conc_vec[i].last_r_conc += eq.address_k_conc_vec[i].rstrand[ii][jj];
 
-                        eq.address_k_conc_vec[i].fstrand_change[ii][jj].set_d(0.0);
-                        eq.address_k_conc_vec[i].rstrand_change[ii][jj].set_d(0.0);
+                        eq.address_k_conc_vec[i].fstrand_change[ii][jj] = 0.0;
+                        eq.address_k_conc_vec[i].rstrand_change[ii][jj] = 0.0;
                     }
                 }
 
@@ -377,64 +334,61 @@ namespace primersim{
                     }
                 }
 
-                //Add changes to strand concentrations and sum all f and r strands
-                eq.address_k_conc_vec[i].total_f_conc.set_d(0.0);
-                eq.address_k_conc_vec[i].total_r_conc.set_d(0.0);
+                //Add changes and sum all f and r strands
+                eq.address_k_conc_vec[i].total_f_conc = 0.0;
+                eq.address_k_conc_vec[i].total_r_conc = 0.0;
                 for(int ii = 0; ii < 5; ii++){
                     for(int jj = 0; jj < 5; jj++){
-                        eq.address_k_conc_vec[i].fstrand[ii][jj].add(eq.address_k_conc_vec[i].fstrand[ii][jj], eq.address_k_conc_vec[i].fstrand_change[ii][jj]);
-                        eq.address_k_conc_vec[i].rstrand[ii][jj].add(eq.address_k_conc_vec[i].rstrand[ii][jj], eq.address_k_conc_vec[i].rstrand_change[ii][jj]);
-                        eq.address_k_conc_vec[i].total_f_conc.add(eq.address_k_conc_vec[i].total_f_conc, eq.address_k_conc_vec[i].fstrand[ii][jj]);
-                        eq.address_k_conc_vec[i].total_r_conc.add(eq.address_k_conc_vec[i].total_r_conc, eq.address_k_conc_vec[i].rstrand[ii][jj]);
+                        eq.address_k_conc_vec[i].fstrand[ii][jj] += eq.address_k_conc_vec[i].fstrand_change[ii][jj];
+                        eq.address_k_conc_vec[i].rstrand[ii][jj] += eq.address_k_conc_vec[i].rstrand_change[ii][jj];
+                        eq.address_k_conc_vec[i].total_f_conc += eq.address_k_conc_vec[i].fstrand[ii][jj];
+                        eq.address_k_conc_vec[i].total_r_conc += eq.address_k_conc_vec[i].rstrand[ii][jj];
                     }
                 }
-
             }
 
-            eq.tmp[0].div(eq.address_k_conc_vec[addr].total_f_conc, eq.address_k_conc_vec[addr].last_f_conc);
-            eq.tmp[0].sub_d(eq.tmp[0], 1.0);
+            eq.tmp[0] = eq.address_k_conc_vec[addr].total_f_conc / eq.address_k_conc_vec[addr].last_f_conc - 1.0;
+            eq.tmp[1] = eq.address_k_conc_vec[addr].total_r_conc / eq.address_k_conc_vec[addr].last_r_conc - 1.0;
 
-            eq.tmp[1].div(eq.address_k_conc_vec[addr].total_r_conc, eq.address_k_conc_vec[addr].last_r_conc);
-            eq.tmp[1].sub_d(eq.tmp[1], 1.0);
-
-            eq.spec_total.add(eq.address_k_conc_vec[addr].total_f_conc, eq.address_k_conc_vec[addr].total_r_conc);
+            eq.spec_total = eq.address_k_conc_vec[addr].total_f_conc + eq.address_k_conc_vec[addr].total_r_conc;
 
             if(out_filename != NULL){
                 FILE *outfile = fopen(out_filename, "a");
-                //cycle,f_primer,r_primer,spec_f,spec_r,nonspec_f,nonspec_r
-                mpfr_fprintf(outfile, "%02u,%lf,%.9Rf,%.9Rf,%.9Re,%.9Re,%.9Re,%.9Re", cycle, temp_c_profile[cycle-1], eq.tmp[0].val, eq.tmp[1].val, eq.c0[F].val, eq.c0[R].val, eq.address_k_conc_vec[addr].total_f_conc.val, eq.address_k_conc_vec[addr].total_r_conc.val);
+                fprintf(outfile, "%02u,%lf,%.9Lf,%.9Lf,%.9Le,%.9Le,%.9Le,%.9Le", cycle, temp_c_profile[cycle-1], (long double)eq.tmp[0], (long double)eq.tmp[1], (long double)eq.c0[F], (long double)eq.c0[R], (long double)eq.address_k_conc_vec[addr].total_f_conc, (long double)eq.address_k_conc_vec[addr].total_r_conc);
                 fclose(outfile);
             }
-            eq.tmp[0].set_d(0.);
-            eq.tmp[1].set_d(0.);
-            eq.tmp[2].set_d(0.);
-            eq.tmp[3].set_d(0.);
-            eq.nonspec_total.set_d(0.0);
+
+            eq.tmp[0] = 0.0;
+            eq.tmp[1] = 0.0;
+            eq.tmp[2] = 0.0;
+            eq.tmp[3] = 0.0;
+            eq.nonspec_total = 0.0;
             for(unsigned int i = 0; i < addresses.size(); i++){
                 if (i == addr)
                     continue;
-                eq.tmp[0].add(eq.tmp[0], eq.address_k_conc_vec[i].total_f_conc);
-                eq.tmp[1].add(eq.tmp[1], eq.address_k_conc_vec[i].last_f_conc);
-                eq.tmp[2].add(eq.tmp[2], eq.address_k_conc_vec[i].total_r_conc);
-                eq.tmp[3].add(eq.tmp[3], eq.address_k_conc_vec[i].last_r_conc);
-                eq.nonspec_total.add(eq.nonspec_total, eq.address_k_conc_vec[i].total_f_conc);
-                eq.nonspec_total.add(eq.nonspec_total, eq.address_k_conc_vec[i].total_r_conc);
+                eq.tmp[0] += eq.address_k_conc_vec[i].total_f_conc;
+                eq.tmp[1] += eq.address_k_conc_vec[i].last_f_conc;
+                eq.tmp[2] += eq.address_k_conc_vec[i].total_r_conc;
+                eq.tmp[3] += eq.address_k_conc_vec[i].last_r_conc;
+                eq.nonspec_total += eq.address_k_conc_vec[i].total_f_conc;
+                eq.nonspec_total += eq.address_k_conc_vec[i].total_r_conc;
             }
-            eq.tmp[1].div(eq.tmp[0], eq.tmp[1]);
-            eq.tmp[1].sub_d(eq.tmp[1], 1.);
-            eq.tmp[3].div(eq.tmp[2], eq.tmp[3]);
-            eq.tmp[3].sub_d(eq.tmp[3], 1.);
-            eq.last_nonspec_frc_total.set(eq.tmp[0]);
-            eq.last_nonspec_rrc_total.set(eq.tmp[1]);
+            Real total_nonspec_f = eq.tmp[0];
+            Real last_nonspec_f  = eq.tmp[1];
+            Real total_nonspec_r = eq.tmp[2];
+            Real last_nonspec_r  = eq.tmp[3];
+            eq.tmp[1] = total_nonspec_f / last_nonspec_f - 1.0;
+            eq.tmp[3] = total_nonspec_r / last_nonspec_r - 1.0;
+            eq.last_nonspec_frc_total = total_nonspec_f;
+            eq.last_nonspec_rrc_total = eq.tmp[1];
             if(out_filename != NULL){
                 FILE *outfile = fopen(out_filename, "a");
-                mpfr_fprintf(outfile, ",%.9Re,%.9Rf,%.9Re,%.9Rf\n", eq.tmp[0].val, eq.tmp[1].val, eq.tmp[2].val, eq.tmp[3].val);
+                fprintf(outfile, ",%.9Le,%.9Lf,%.9Le,%.9Lf\n", (long double)total_nonspec_f, (long double)eq.tmp[1], (long double)total_nonspec_r, (long double)eq.tmp[3]);
                 fclose(outfile);
             }
         }
 
-        eq.tmp[0].div(eq.spec_total, eq.nonspec_total);
-        return eq.tmp[0].get_d();
+        return (double)(eq.spec_total / eq.nonspec_total);
     }
 
 
