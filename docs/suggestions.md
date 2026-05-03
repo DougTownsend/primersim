@@ -23,62 +23,9 @@ Items specific to the address-evaluation path
 
 ---
 
-## Correctness bugs (still open)
-
-### 1. `read_addresses` allocates `r` / `r_rc` with `f`-length
-[src/sim.cpp:88-91](../src/sim.cpp#L88-L91)
-
-```cpp
-a.f    = new char[strlen(tmp_f)+1];
-a.r    = new char[strlen(tmp_f)+1];  // ← uses tmp_f length
-a.f_rc = new char[strlen(tmp_f)+1];
-a.r_rc = new char[strlen(tmp_f)+1];
-```
-
-If `tmp_r` is longer than `tmp_f` the next `strcpy(a.r, tmp_r)` writes
-past the buffer. Today both inputs are 20 nt so it's latent. Fix:
-size each buffer with its own `strlen`, or switch to `std::string`.
-
----
-
 ## Cleanups
 
-### 2. Right-size the c, c0, k arrays
-[include/eq.hpp:106-117](../include/eq.hpp#L106-L117)
-
-```cpp
-Real c[19];
-Real c0[6];
-Real k[13];
-```
-
-The active enums use 10 / 3 / 7 of those slots respectively. Resize
-to match. With `Real = double` each unused slot is only 8 bytes per
-EQ instance (and only one EQ per thread), so the savings on EQ are
-negligible — but the pattern propagates to `address_k_conc_vec`,
-which does scale with addresses, and the oversized arrays make the
-data layout misleading.
-
-### 3. Replace bare-int constants with typed enums
-[include/eq.hpp:45-62](../include/eq.hpp#L45-L62)
-
-```cpp
-const int F = 0;
-const int R = 1;
-...
-const int K_FH = 0;
-const int K_RH = 1;
-...
-```
-
-Bare ints provide no type-checking. Two parallel sets of int
-constants share index 0..whatever, so `c[K_FF]` compiles silently.
-Two `enum class Species : int { F=0, ... };` and
-`enum class Rate : int { K_FH=0, ... };` would catch the mixup at
-compile time, and let `eq.hpp` be `#include`d without polluting the
-namespace.
-
-### 4. Function-length budget in `sim_pcr`
+### 1. Function-length budget in `sim_pcr`
 [src/sim.cpp:194-398](../src/sim.cpp#L194-L398)
 
 `Primeanneal::sim_pcr` is ~205 lines. It has clear sub-phases
@@ -87,20 +34,11 @@ output). Extract those into named helpers — even just naming the
 "populate per-cycle K cache" block as a function would make
 `sim_pcr` skimmable.
 
-### 5. Output CSV column documentation
-The cycle rows written by `sim_pcr`
-([src/sim.cpp:268, 362](../src/sim.cpp)) and the continuation row
-([src/sim.cpp:380](../src/sim.cpp#L380)) have wide column lists
-with no header row — the only existing hint is a comment above the
-fprintf. Either:
-- emit a header on first write, or
-- expand the comment block to enumerate every column position.
-
 ---
 
 ## Performance — likely wins
 
-### 6. Vectorize `calc_strand_bindings`
+### 2. Vectorize `calc_strand_bindings`
 [src/sim.cpp:134-191](../src/sim.cpp#L134-L191)
 
 The function is called 5×5 = 25 times per address per cycle, each
@@ -115,7 +53,7 @@ and unrolling could yield 2-4× on this hotspot — but profile first.
 
 ## Performance — speculative
 
-### 7. Multi-thread inside `sim_pcr`
+### 3. Multi-thread inside `sim_pcr`
 The current threading parallelizes across addresses
 (`eval_addresses_thread`, [src/sim.cpp:400](../src/sim.cpp#L400)),
 but a single `sim_pcr` call is fully serial. The outer i-loops in
@@ -124,7 +62,7 @@ the per-cycle code (calling `calc_strand_bindings` and
 could be parallelized for large address sets. Only worth doing if
 single-address simulation is the bottleneck.
 
-### 8. Profile before tuning further
+### 4. Profile before tuning further
 Most of the items above are at-most-2× wins. Run `perf record
 ./test_eq` on a representative workload first; the hotspot may be
 in `thal` calls during per-cycle dhds setup rather than in the
@@ -137,7 +75,7 @@ was only ~1.9 %.)
 
 ## Investigations
 
-### 9. Three genuinely failing addresses
+### 5. Three genuinely failing addresses
 After the [k_RH model fix](../src/eq.cpp#L75) (described in
 [docs/precision.md](precision.md)), 3 of 979 addresses still fail
 to amplify symmetrically — addresses 686, 803, 322. They show the
@@ -189,7 +127,7 @@ Project-wide history of resolved items:
   "R-stuck" addresses out of 979. Fixed in
   [src/eq.cpp:75](../src/eq.cpp#L75) (k_RH folded into B1) and the
   Jacobian's J11. Post-fix the failure rate is 3/979 ≈ 0.3 % (real
-  primer-design issues; see #9 above).
+  primer-design issues; see #5 above).
 - Build dropped `-lmpfr -lgmp` and the `/share/tuck/dktownse/...`
   paths.
 - Outer-loop convergence in `solve_eq` switched from bit-exact `==`
@@ -233,3 +171,24 @@ Project-wide history of resolved items:
   `total_nonspec_*` / `last_nonspec_*` / `nonspec_*_growth` family
   for the per-cycle nonspec dump. Output bit-identical to baseline
   (md5 unchanged across 979 addresses × 30 cycles).
+- `read_addresses` buffer-size bug fixed: `r` and `r_rc` now
+  allocate with `strlen(tmp_r)+1` instead of `strlen(tmp_f)+1`. Was
+  latent because both inputs are 20 nt; would have written past
+  buffer if `tmp_r` were ever longer than `tmp_f`.
+- `EQ::c`, `c0`, `k`, and `last_val` arrays right-sized to match
+  the active enums (10 / 3 / 7 / 2 entries respectively, was
+  19 / 6 / 13 / 2). Underlying storage is now wrapped in an
+  `IndexedArray<Idx, N>` template that takes a typed index — see
+  next item.
+- Bare-int constants (`const int F = 0;` etc.) replaced with two
+  `enum class` types: `Species` (for `c`, `c0`, `last_val`) and
+  `Rate` (for `k`). Namespace-scope `inline constexpr` aliases
+  preserve the existing `c[F]`, `k[K_FH]` syntax. Cross-type
+  mixups like `c[K_FF]` are now compile errors. `IndexedArray`
+  exposes an `at(int)` escape hatch for `print_state`'s int-keyed
+  dump loops. Output bit-identical to baseline.
+- CSV column documentation expanded: the cycle-0 `fprintf` in
+  `sim_pcr` now has a 12-line block enumerating each column
+  (`f_growth_ratio`, `r_growth_ratio`, `c0[F]`, etc.); the
+  per-cycle `fprintf` calls have one-line pointer comments back
+  to that block. No file-format change — just a comment.

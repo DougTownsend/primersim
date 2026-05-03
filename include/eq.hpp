@@ -20,46 +20,58 @@ namespace primersim{
     typedef double Real;
 #endif
 
-    /*
-    Concentration array indices (active set after A/B/Y removal):
-    0, F:  Forward primer
-    1, R:  Reverse primer
-    2, X:  Nonspec binding site
-    3, FH: Forward primer hairpin
-    4, RH: Reverse primer hairpin
-    5, FF: Forward primer dimer
-    6, RR: Reverse primer dimer
-    7, FR: Forward-Reverse primer dimer
-    8, FX: Forward bound to nonspec
-    9, RX: Reverse bound to nonspec
+    // Concentration species (used to index EQ::c and EQ::c0):
+    //   F:  Forward primer       FF: Forward primer dimer
+    //   R:  Reverse primer       RR: Reverse primer dimer
+    //   X:  Nonspec binding site FR: Forward-Reverse primer dimer
+    //   FH: Forward primer hairpin
+    //   RH: Reverse primer hairpin
+    //   FX: Forward bound to nonspec
+    //   RX: Reverse bound to nonspec
+    enum class Species : int {
+        F=0, R=1, X=2, FH=3, RH=4, FF=5, RR=6, FR=7, FX=8, RX=9
+    };
 
-    Equilibrium constant indices:
-    0, K_FH:   Forward hairpin
-    1, K_RH:   Reverse hairpin
-    2, K_FF:   Forward dimer
-    3, K_RR:   Reverse dimer
-    4, K_FR:   Forward-Reverse dimer
-    5, K_FX:   Forward to nonspec
-    6, K_RX:   Reverse to nonspec
-    */
-    const int F = 0;
-    const int R = 1;
-    const int X = 2;
-    const int FH = 3;
-    const int RH = 4;
-    const int FF = 5;
-    const int RR = 6;
-    const int FR = 7;
-    const int FX = 8;
-    const int RX = 9;
+    // Equilibrium constants (used to index EQ::k).
+    enum class Rate : int {
+        K_FH=0, K_RH=1, K_FF=2, K_RR=3, K_FR=4, K_FX=5, K_RX=6
+    };
 
-    const int K_FH = 0;
-    const int K_RH = 1;
-    const int K_FF = 2;
-    const int K_RR = 3;
-    const int K_FR = 4;
-    const int K_FX = 5;
-    const int K_RX = 6;
+    // Aliases so the existing `c[F]`, `k[K_FH]` syntax works without
+    // qualification. Indexing c with a Rate (e.g. `c[K_FF]`) is a
+    // compile error — IndexedArray below only matches one Idx type.
+    inline constexpr Species F  = Species::F;
+    inline constexpr Species R  = Species::R;
+    inline constexpr Species X  = Species::X;
+    inline constexpr Species FH = Species::FH;
+    inline constexpr Species RH = Species::RH;
+    inline constexpr Species FF = Species::FF;
+    inline constexpr Species RR = Species::RR;
+    inline constexpr Species FR = Species::FR;
+    inline constexpr Species FX = Species::FX;
+    inline constexpr Species RX = Species::RX;
+
+    inline constexpr Rate K_FH = Rate::K_FH;
+    inline constexpr Rate K_RH = Rate::K_RH;
+    inline constexpr Rate K_FF = Rate::K_FF;
+    inline constexpr Rate K_RR = Rate::K_RR;
+    inline constexpr Rate K_FR = Rate::K_FR;
+    inline constexpr Rate K_FX = Rate::K_FX;
+    inline constexpr Rate K_RX = Rate::K_RX;
+
+    // Real array typed by an index enum. operator[] only accepts the
+    // matching Idx type, so c (Species-indexed) and k (Rate-indexed)
+    // can't be confused. Use .at(int) for raw integer access (only
+    // print_state needs this for its dump loops).
+    template<typename Idx, std::size_t N>
+    struct IndexedArray {
+        Real data[N];
+        Real& operator[](Idx i)             { return data[static_cast<int>(i)]; }
+        const Real& operator[](Idx i) const { return data[static_cast<int>(i)]; }
+        Real& at(int i)             { return data[i]; }
+        const Real& at(int i) const { return data[i]; }
+        static constexpr std::size_t size() { return N; }
+    };
 
     const int addr_end = 0;
     const int primerf = 1;
@@ -122,10 +134,12 @@ namespace primersim{
             // Subsequent calls warm-start from the prior solution instead
             // of resetting to c0/2.
             bool warm_start_valid = false;
-            Real last_val[2];
-            Real c[19];
-            Real c0[6];
-            Real k[13];
+            // last_val is only ever last_val[F] / last_val[R]; size 2 is
+            // sufficient since F=0, R=1.
+            IndexedArray<Species, 2>  last_val;
+            IndexedArray<Species, 10> c;
+            IndexedArray<Species, 3>  c0;  // only F, R, X are used
+            IndexedArray<Rate,    7>  k;
             Real spec_total;
             Real nonspec_total;
             Real spec_fwd_amp;

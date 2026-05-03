@@ -9,14 +9,14 @@ namespace primersim{
     void EQ::print_state(std::string out_filename, std::string s){
         FILE *outfile = fopen(out_filename.c_str(), "a");
         fprintf(outfile, "%s,", s.c_str());
-        for(int i = 0; i < 2; i++)
-            fprintf(outfile, "last_val[%d],%.9Le,", i, (long double)last_val[i]);
-        for(int i = 0; i < 10; i++)
-            fprintf(outfile, "c[%d],%.9Le,", i, (long double)c[i]);
-        for(int i = 0; i < 3; i++)
-            fprintf(outfile, "c0[%d],%.9Le,", i, (long double)c0[i]);
-        for(int i = 0; i < 7; i++)
-            fprintf(outfile, "k[%d],%.9Le,", i, (long double)k[i]);
+        for(int i = 0; i < (int)last_val.size(); i++)
+            fprintf(outfile, "last_val[%d],%.9Le,", i, (long double)last_val.at(i));
+        for(int i = 0; i < (int)c.size(); i++)
+            fprintf(outfile, "c[%d],%.9Le,", i, (long double)c.at(i));
+        for(int i = 0; i < (int)c0.size(); i++)
+            fprintf(outfile, "c0[%d],%.9Le,", i, (long double)c0.at(i));
+        for(int i = 0; i < (int)k.size(); i++)
+            fprintf(outfile, "k[%d],%.9Le,", i, (long double)k.at(i));
         fprintf(outfile, "\n");
         fclose(outfile);
     }

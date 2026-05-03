@@ -93,10 +93,10 @@ namespace primersim{
                 if(fscanf(infile, "%[ACGT],%[ACGT]%*[^\n]\n", tmp_f, tmp_r) == EOF)
                     break;
             }
-            a.f = new char[strlen(tmp_f)+1];
-            a.r = new char[strlen(tmp_f)+1];
+            a.f    = new char[strlen(tmp_f)+1];
+            a.r    = new char[strlen(tmp_r)+1];
             a.f_rc = new char[strlen(tmp_f)+1];
-            a.r_rc = new char[strlen(tmp_f)+1];
+            a.r_rc = new char[strlen(tmp_r)+1];
             strcpy(a.f, tmp_f);
             strcpy(a.r, tmp_r);
             reverse_comp(a.f, a.f_rc);
@@ -279,6 +279,23 @@ namespace primersim{
         eq.c0[R] = primer_r_conc;
 
         if(out_filename != NULL){
+            // Each cycle row written by sim_pcr has 12 comma-separated columns.
+            // Cycle 0 fills columns 3, 4, 10, 12 with literal zeros (no growth
+            // measurement is meaningful before any cycle has run); subsequent
+            // cycles fill them with computed ratios. Layout:
+            //
+            //   1  cycle              (00..N, %02u)
+            //   2  temp_c             (the cycle's temperature in C)
+            //   3  f_growth_ratio     (target_F_total / target_F_last - 1)
+            //   4  r_growth_ratio     (target_R_total / target_R_last - 1)
+            //   5  c0[F]              (free F primer remaining)
+            //   6  c0[R]              (free R primer remaining)
+            //   7  total_f_conc       (target's F-strand total)
+            //   8  total_r_conc       (target's R-strand total)
+            //   9  total_nonspec_f    (sum of F-strand totals across non-target addrs)
+            //  10  nonspec_f_growth   (total_nonspec_f / last_nonspec_f - 1)
+            //  11  total_nonspec_r    (sum of R-strand totals across non-target addrs)
+            //  12  nonspec_r_growth   (total_nonspec_r / last_nonspec_r - 1)
             FILE *outfile = fopen(out_filename, "a");
             fprintf(outfile, "%02u,%lf,0.000000000,0.000000000,%.9Le,%.9Le,%.9Le,%.9Le", 0, temp_c_profile[0], (long double)eq.c0[F], (long double)eq.c0[R], (long double)eq.address_k_conc_vec[addr].fstrand[addr_end][addr_end], (long double)eq.address_k_conc_vec[addr].rstrand[addr_end][addr_end]);
             // Cycle-0 dump: sum the initial fstrand/rstrand totals across
@@ -382,6 +399,8 @@ namespace primersim{
             eq.spec_total = eq.address_k_conc_vec[addr].total_f_conc + eq.address_k_conc_vec[addr].total_r_conc;
 
             if(out_filename != NULL){
+                // Columns 1..8 of the cycle row. See the cycle-0 fprintf
+                // above for the full 12-column layout.
                 FILE *outfile = fopen(out_filename, "a");
                 fprintf(outfile, "%02u,%lf,%.9Lf,%.9Lf,%.9Le,%.9Le,%.9Le,%.9Le", cycle, temp_c_profile[cycle-1], (long double)f_growth_ratio, (long double)r_growth_ratio, (long double)eq.c0[F], (long double)eq.c0[R], (long double)eq.address_k_conc_vec[addr].total_f_conc, (long double)eq.address_k_conc_vec[addr].total_r_conc);
                 fclose(outfile);
@@ -409,6 +428,8 @@ namespace primersim{
             eq.last_nonspec_frc_total = total_nonspec_f;
             eq.last_nonspec_rrc_total = nonspec_f_growth;
             if(out_filename != NULL){
+                // Columns 9..12 of the cycle row, completing the line. See
+                // the cycle-0 fprintf for the full 12-column layout.
                 FILE *outfile = fopen(out_filename, "a");
                 fprintf(outfile, ",%.9Le,%.9Lf,%.9Le,%.9Lf\n", (long double)total_nonspec_f, (long double)nonspec_f_growth, (long double)total_nonspec_r, (long double)nonspec_r_growth);
                 fclose(outfile);
