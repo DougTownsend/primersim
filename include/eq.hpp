@@ -87,6 +87,23 @@ namespace primersim{
         double ds;
     };
 
+    // A single primer in the flat primer pool. seq is the literal
+    // sequence (read from primers.csv); rc is its reverse complement.
+    // Both are owned char* allocations, freed by ~Primeanneal.
+    struct primer_seq {
+        char *seq;
+        char *rc;
+    };
+
+    // An (F-primer-index, R-primer-index) tuple naming one PCR pair.
+    // Indices reference Primeanneal::primer_pool. A "pairing" — the
+    // full assignment of F/R partners across an experiment — is the
+    // vector Primeanneal::pairings.
+    struct pairing {
+        int f_idx;
+        int r_idx;
+    };
+
     // Cached calc_dimer result (one entry per (addr1, kind1, addr2, kind2)
     // tuple). Width depends on ThalReal — float halves it.
     struct dh_ds_cache_entry {
@@ -200,13 +217,23 @@ namespace primersim{
                     }
                 }
             };
-            std::vector<Primeanneal::primer_info> primers;
-            std::vector<Primeanneal::address> addresses;
-            // Cache of calc_dimer results, indexed as
-            //   dimer_cache[((i*4 + ki)*N + j)*4 + kj]
-            // where (i, ki) and (j, kj) are address index + sequence kind
-            // (0=f, 1=f_rc, 2=r, 3=r_rc per `address::get_seq`). Populated
-            // once by populate_dimer_cache; reused by every sim_pcr call.
+            std::vector<Primeanneal::primer_info> primers;     // legacy, used by address_eval.cpp
+            std::vector<Primeanneal::address> addresses;       // legacy, used by address_eval.cpp
+
+            // Flat pool of primer sequences (read from primers.csv) and the
+            // current F/R pairing assignment (read from pairings.csv). The
+            // pairing is what sim_pcr operates on; the primer_pool is what
+            // the dimer cache is keyed by.
+            std::vector<primer_seq> primer_pool;
+            std::vector<pairing> pairings;
+
+            // Symmetric / triangular cache of calc_dimer results, keyed by
+            // primer (not pairing) so it survives pairing reshuffles.
+            // Layout: M = 2*primer_pool.size() sequence slots (each primer
+            // contributes seq=kind 0 and rc=kind 1). Canonical pair (a, b)
+            // with a <= b at:
+            //   idx(a, b) = a*(2*M - a - 1)/2 + b
+            // Populated once by populate_dimer_cache after read_primer_pool.
             std::vector<dh_ds_cache_entry> dimer_cache;
             unsigned int address_index;
             std::mutex addr_mtx;
@@ -229,9 +256,19 @@ namespace primersim{
             void assign_addresses(const char *out_filename, double temp_c, double mv_conc, double dv_conc, double dntp_conc);
             void assign_addresses_nosort(const char *out_filename);
             void read_addresses(const char *filename, bool with_temp_c);
-            // Precompute calc_dimer for every (i, ki, j, kj) tuple. Uses
-            // num_cpu threads. Must be called after read_addresses; before
-            // sim_pcr if you want sim_pcr to skip the per-call thal work.
+            // Read a flat primer-per-line CSV into primer_pool. Frees any
+            // previously-loaded primers. Each entry gets its reverse
+            // complement computed eagerly.
+            void read_primer_pool(const char *filename);
+            // Read an "f_idx,r_idx" CSV into pairings (one F/R partnership
+            // per row, indices reference primer_pool). Replaces any
+            // previous pairings; primer_pool is untouched, so the dimer
+            // cache survives this call.
+            void read_pairings(const char *filename);
+            // Precompute every canonical thal pair (primer, kind, primer,
+            // kind) under a fixed buffer condition. Uses num_cpu threads.
+            // Call after read_primer_pool. Output is pairing-agnostic —
+            // re-shuffling pairings does NOT invalidate this cache.
             void populate_dimer_cache(double mv_conc, double dv_conc, double dntp_conc, double temp_c);
             void evaluate_addresses(const char *in_filename, const char *out_filename, double dna_conc, double primer_conc, double mv_conc, double dv_conc, double dntp_conc);
             void eval_thread(const char *out_filename, double dna_conc, double primer_conc, double mv_conc, double dv_conc, double dntp_conc);

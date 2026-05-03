@@ -27,6 +27,11 @@ namespace primersim{
             delete[] a.r_rc;
         }
         addresses.clear();
+        for(auto &p : primer_pool){
+            delete[] p.seq;
+            delete[] p.rc;
+        }
+        primer_pool.clear();
     }
 
     double Primeanneal::dg_to_eq_const(double dg, double temp_c){
@@ -73,6 +78,41 @@ namespace primersim{
         return o;
     }
 
+    void Primeanneal::read_primer_pool(const char *filename){
+        // Free any previously-loaded primers before clearing.
+        for (auto &p : primer_pool) {
+            delete[] p.seq;
+            delete[] p.rc;
+        }
+        primer_pool.clear();
+
+        FILE *infile = fopen(filename, "r");
+        char buffer[100];
+        // Trailing space in format eats newlines / trailing whitespace.
+        // %*[^\n] would fail on lines with no junk between the value
+        // and the newline, leaving the stream stuck on the newline.
+        while (fscanf(infile, "%99[ACGT] ", buffer) == 1) {
+            primer_seq p;
+            size_t len = strlen(buffer) + 1;
+            p.seq = new char[len];
+            p.rc  = new char[len];
+            strcpy(p.seq, buffer);
+            reverse_comp(p.seq, p.rc);
+            primer_pool.push_back(p);
+        }
+        fclose(infile);
+    }
+
+    void Primeanneal::read_pairings(const char *filename){
+        pairings.clear();
+        FILE *infile = fopen(filename, "r");
+        pairing pr;
+        while (fscanf(infile, "%d,%d ", &pr.f_idx, &pr.r_idx) == 2) {
+            pairings.push_back(pr);
+        }
+        fclose(infile);
+    }
+
     void Primeanneal::populate_dimer_cache(double mv_conc, double dv_conc, double dntp_conc, double temp_c){
         thal_args ta;
         set_thal_default_args(&ta);
@@ -81,22 +121,20 @@ namespace primersim{
         ta.dntp = dntp_conc;
         ta.temp = 273.15 + temp_c;
 
-        // Symmetric / triangular cache: thal(seq1, seq2) is approximately
-        // symmetric in its arguments, so we store only one of (a, b) and
-        // (b, a). With M = 4*N "sequence slots" (each of N addresses has
-        // 4 kinds: f, f_rc, r, r_rc), the cache holds the M*(M+1)/2
-        // canonical pairs (a, b) with a <= b. Index formula:
+        // Symmetric / triangular cache, keyed by (primer index, kind).
+        // Each primer in primer_pool contributes 2 sequence slots: kind=0
+        // for primer.seq and kind=1 for primer.rc. M = 2 * P slots total.
+        // The cache holds the M*(M+1)/2 canonical pairs (a, b) with a <= b.
         //   idx(a, b) = a*(2*M - a - 1)/2 + b
-        // Lookup callers swap to a <= b before indexing — see
-        // cached_dimer in sim_pcr.
-        const size_t N = addresses.size();
-        const size_t M = 4 * N;
+        // sim_pcr's cached() lambda swaps to canonical order before
+        // indexing.
+        const size_t P = primer_pool.size();
+        const size_t M = 2 * P;
         dimer_cache.assign(M * (M + 1) / 2, {0, 0});
 
-        // Cyclic distribution by `a` for load balance: each thread handles
-        // a's where a % nthreads == t. Triangular-row work decreases as
-        // a grows (row a has M-a entries), so a contiguous slice would
-        // give thread 0 most of the work and thread N-1 almost none.
+        // Cyclic distribution by `a` for load balance: triangular-row work
+        // decreases as a grows (row a has M-a entries), so a contiguous
+        // slice would unbalance heavily.
         const unsigned int nthreads = num_cpu > 0 ? num_cpu : 1;
         std::vector<std::thread> threads;
         threads.reserve(nthreads);
@@ -104,16 +142,15 @@ namespace primersim{
             threads.emplace_back([this, t, nthreads, M, ta]() {
                 thal_args local_ta = ta;
                 for (size_t a = t; a < M; a += nthreads) {
-                    size_t i = a / 4;
-                    int   ki = (int)(a % 4);
+                    size_t i = a / 2;
+                    int   ki = (int)(a % 2);
+                    char *seq_a = (ki == 0) ? this->primer_pool[i].seq : this->primer_pool[i].rc;
                     size_t row_offset = a * (2*M - a - 1) / 2;
                     for (size_t b = a; b < M; b++) {
-                        size_t j = b / 4;
-                        int   kj = (int)(b % 4);
-                        thal_results o = this->calc_dimer(
-                            this->addresses[i].get_seq(ki),
-                            this->addresses[j].get_seq(kj),
-                            local_ta);
+                        size_t j = b / 2;
+                        int   kj = (int)(b % 2);
+                        char *seq_b = (kj == 0) ? this->primer_pool[j].seq : this->primer_pool[j].rc;
+                        thal_results o = this->calc_dimer(seq_a, seq_b, local_ta);
                         auto &p = this->dimer_cache[row_offset + b];
                         p.dh = (ThalReal)o.dh;
                         p.ds = (ThalReal)o.ds;
@@ -268,13 +305,14 @@ namespace primersim{
         ta.dv = dv_conc;
         ta.dntp = dntp_conc;
         ta.temp = 273.15 + 55;
-        eq.address_k_conc_vec.resize(addresses.size());
+        const size_t N = pairings.size();
+        eq.address_k_conc_vec.resize(N);
         eq.last_nonspec_frc_total = 0.0;
         eq.last_nonspec_rrc_total = 0.0;
 
-        for(unsigned int i = 0; i < addresses.size(); i++){
-            eq.address_k_conc_vec[i].fstrand[0][0] = (Real)dna_conc / addresses.size();
-            eq.address_k_conc_vec[i].rstrand[0][0] = (Real)dna_conc / addresses.size();
+        for(unsigned int i = 0; i < N; i++){
+            eq.address_k_conc_vec[i].fstrand[0][0] = (Real)dna_conc / N;
+            eq.address_k_conc_vec[i].rstrand[0][0] = (Real)dna_conc / N;
             for(int ii = 0; ii < 5; ii++){
                 for(int jj = 0; jj < 5; jj++){
                     if (!jj && !ii)
@@ -284,16 +322,20 @@ namespace primersim{
                 }
             }
 
-            // Read pre-computed dh/ds values from dimer_cache instead of
-            // calling calc_dimer. The cache is symmetric / triangular —
-            // it stores only canonical pairs (a <= b in the M = 4*N
-            // sequence-slot space). Swap if needed so we hit the same
-            // entry regardless of argument order.
-            const size_t N_addr = addresses.size();
-            const size_t M_total = 4 * N_addr;
-            auto cached = [this, M_total](size_t a_addr, int ka, size_t b_addr, int kb) -> const dh_ds_cache_entry& {
-                size_t a = a_addr * 4 + ka;
-                size_t b = b_addr * 4 + kb;
+            // Read pre-computed dh/ds values from dimer_cache. The cache is
+            // keyed by primer (not pairing), so we map (pair_idx,
+            // address_kind ∈ {0=f, 1=f_rc, 2=r, 3=r_rc}) to (primer_idx,
+            // primer_kind ∈ {0=seq, 1=rc}) using the current pairings.
+            // Cache is symmetric / triangular over M = 2*P sequence slots
+            // — swap to a <= b before indexing.
+            const size_t M_total = 2 * primer_pool.size();
+            auto cached = [this, M_total](size_t a_pair, int ka, size_t b_pair, int kb) -> const dh_ds_cache_entry& {
+                const auto &pa = this->pairings[a_pair];
+                const auto &pb = this->pairings[b_pair];
+                int pi_a = (ka & 2) ? pa.r_idx : pa.f_idx;
+                int pi_b = (kb & 2) ? pb.r_idx : pb.f_idx;
+                size_t a = (size_t)pi_a * 2 + (ka & 1);
+                size_t b = (size_t)pi_b * 2 + (kb & 1);
                 if (a > b) std::swap(a, b);
                 return this->dimer_cache[a * (2*M_total - a - 1) / 2 + b];
             };
@@ -318,12 +360,12 @@ namespace primersim{
         }
 
         ThalReal dhds_f_hairpin[2];
-        o = calc_hairpin(addresses[addr].f, ta);
+        o = calc_hairpin(primer_pool[pairings[addr].f_idx].seq, ta);
         dhds_f_hairpin[dh] = o.dh;
         dhds_f_hairpin[ds] = o.ds;
 
         ThalReal dhds_r_hairpin[2];
-        o = calc_hairpin(addresses[addr].r, ta);
+        o = calc_hairpin(primer_pool[pairings[addr].r_idx].seq, ta);
         dhds_r_hairpin[dh] = o.dh;
         dhds_r_hairpin[ds] = o.ds;
 
@@ -354,7 +396,7 @@ namespace primersim{
             // all non-target addresses for the nonspec columns.
             Real init_sum_fstrand = 0.0;
             Real init_sum_rstrand = 0.0;
-            for(unsigned int i = 0; i < addresses.size(); i++){
+            for(unsigned int i = 0; i < N; i++){
                 if (i == addr)
                     continue;
                 init_sum_fstrand += eq.address_k_conc_vec[i].fstrand[addr_end][addr_end];
@@ -373,7 +415,7 @@ namespace primersim{
             // Populate per-address K caches for this cycle. Each value
             // would otherwise be recomputed 25 times by calc_strand_bindings
             // and update_strand_concs.
-            for(unsigned int i = 0; i < addresses.size(); i++){
+            for(unsigned int i = 0; i < N; i++){
                 auto &kc = eq.address_k_conc_vec[i];
                 for (int p = 0; p < 2; p++)
                     for (int e = 0; e < 4; e++)
@@ -393,7 +435,7 @@ namespace primersim{
             Real sum_f_weighted = 0.0;
             Real sum_r_weighted = 0.0;
 
-            for(unsigned int i = 0; i < addresses.size(); i++){
+            for(unsigned int i = 0; i < N; i++){
                 for(int end5 = 0; end5 < 5; end5++){
                     for (int end3 = 0; end3 < 5; end3++){
                         calc_strand_bindings(eq, temp_c_profile, i, cycle, addr, end5, end3,
@@ -410,7 +452,7 @@ namespace primersim{
             eq.solve_eq();
 
             //Solve individual nonspecific concentrations and update c0 for next cycle
-            for(unsigned int i = 0; i < addresses.size(); i++){
+            for(unsigned int i = 0; i < N; i++){
                 eq.address_k_conc_vec[i].last_f_conc = 0.0;
                 eq.address_k_conc_vec[i].last_r_conc = 0.0;
 
@@ -465,7 +507,7 @@ namespace primersim{
             Real total_nonspec_r = 0.0;
             Real last_nonspec_r  = 0.0;
             eq.nonspec_total = 0.0;
-            for(unsigned int i = 0; i < addresses.size(); i++){
+            for(unsigned int i = 0; i < N; i++){
                 if (i == addr)
                     continue;
                 total_nonspec_f += eq.address_k_conc_vec[i].total_f_conc;
@@ -499,7 +541,7 @@ namespace primersim{
             i = address_index;
             address_index++;
             addr_mtx.unlock();
-            if(i >= addresses.size())
+            if(i >= pairings.size())
                 break;
             double ratio = sim_pcr(NULL, i, temp_c_profile.size(), temp_c_profile, dna_conc, primer_f_conc, primer_r_conc, mv_conc, dv_conc, dntp_conc);
             outfile_mtx.lock();
