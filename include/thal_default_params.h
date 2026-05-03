@@ -4,29 +4,29 @@ requires python3, python3-numpy
 run "python3 thal_default_params_create.py" to regenerate this file.
 
 Globals initialize in this file:
-const double _INFINITY;
-static double atpS[5][5]; AT penalty 
-static double atpH[5][5];  AT penalty 
+const ThalReal _INFINITY;
+static ThalReal atpS[5][5]; AT penalty 
+static ThalReal atpH[5][5];  AT penalty 
 static int numTriloops;  hairpin triloop penalties 
 static int numTetraloops;  hairpin tetraloop penalties 
-static double dangleEntropies3[5][5][5]; thermodynamic paramteres for 3' dangling ends 
-static double dangleEnthalpies3[5][5][5];  ther params for 3' dangling ends 
-static double dangleEntropies5[5][5][5];   ther params for 5' dangling ends 
-static double dangleEnthalpies5[5][5][5];  ther params for 5' dangling ends 
-static double stackEntropies[5][5][5][5];  ther params for perfect match pairs 
-static double stackEnthalpies[5][5][5][5];  ther params for perfect match pairs 
-static double stackint2Entropies[5][5][5][5]; ther params for perfect match and internal mm 
-static double stackint2Enthalpies[5][5][5][5];  ther params for perfect match and internal mm
-static double interiorLoopEntropies[30];  interior loop params according to length of the loop 
-static double bulgeLoopEntropies[30];  bulge loop params according to length of the loop 
-static double hairpinLoopEntropies[30];  hairpin loop params accordint to length of the loop 
-static double interiorLoopEnthalpies[30];  same as interiorLoopEntropies but values of entropy 
-static double bulgeLoopEnthalpies[30];  same as bulgeLoopEntropies but values of entropy 
-static double hairpinLoopEnthalpies[30];  same as hairpinLoopEntropies but values of entropy 
-static double tstackEntropies[5][5][5][5];  ther params for terminal mismatches 
-static double tstackEnthalpies[5][5][5][5];  ther params for terminal mismatches 
-static double tstack2Entropies[5][5][5][5];  ther params for internal terminal mismatches 
-static double tstack2Enthalpies[5][5][5][5];  ther params for internal terminal mismatches 
+static ThalReal dangleEntropies3[5][5][5]; thermodynamic paramteres for 3' dangling ends 
+static ThalReal dangleEnthalpies3[5][5][5];  ther params for 3' dangling ends 
+static ThalReal dangleEntropies5[5][5][5];   ther params for 5' dangling ends 
+static ThalReal dangleEnthalpies5[5][5][5];  ther params for 5' dangling ends 
+static ThalReal stackEntropies[5][5][5][5];  ther params for perfect match pairs 
+static ThalReal stackEnthalpies[5][5][5][5];  ther params for perfect match pairs 
+static ThalReal stackint2Entropies[5][5][5][5]; ther params for perfect match and internal mm 
+static ThalReal stackint2Enthalpies[5][5][5][5];  ther params for perfect match and internal mm
+static ThalReal interiorLoopEntropies[30];  interior loop params according to length of the loop 
+static ThalReal bulgeLoopEntropies[30];  bulge loop params according to length of the loop 
+static ThalReal hairpinLoopEntropies[30];  hairpin loop params accordint to length of the loop 
+static ThalReal interiorLoopEnthalpies[30];  same as interiorLoopEntropies but values of entropy 
+static ThalReal bulgeLoopEnthalpies[30];  same as bulgeLoopEntropies but values of entropy 
+static ThalReal hairpinLoopEnthalpies[30];  same as hairpinLoopEntropies but values of entropy 
+static ThalReal tstackEntropies[5][5][5][5];  ther params for terminal mismatches 
+static ThalReal tstackEnthalpies[5][5][5][5];  ther params for terminal mismatches 
+static ThalReal tstack2Entropies[5][5][5][5];  ther params for internal terminal mismatches 
+static ThalReal tstack2Enthalpies[5][5][5][5];  ther params for internal terminal mismatches 
 static struct triloop* triloopEntropies;  ther penalties for given triloop seq-s 
 static struct triloop* triloopEnthalpies;  ther penalties for given triloop seq-s 
 static struct tetraloop* tetraloopEntropies;  ther penalties for given tetraloop seq-s 
@@ -48,21 +48,21 @@ const double _INFINITY = 1.0 / 0.0;
 # endif
 # endif
 
-static double atpS[5][5] = {
+static ThalReal atpS[5][5] = {
 	{0.00000000001, 0.00000000001, 0.00000000001, 6.9, 0.00000000001},
 	{0.00000000001, 0.00000000001, 0.00000000001, 0.00000000001, 0.00000000001},
 	{0.00000000001, 0.00000000001, 0.00000000001, 0.00000000001, 0.00000000001},
 	{6.9, 0.00000000001, 0.00000000001, 0.00000000001, 0.00000000001},
 	{0.00000000001, 0.00000000001, 0.00000000001, 0.00000000001, 0.00000000001}};
 
-static double atpH[5][5] = {
+static ThalReal atpH[5][5] = {
 	{0.0, 0.0, 0.0, 2200.0, 0.0},
 	{0.0, 0.0, 0.0, 0.0, 0.0},
 	{0.0, 0.0, 0.0, 0.0, 0.0},
 	{2200.0, 0.0, 0.0, 0.0, 0.0},
 	{0.0, 0.0, 0.0, 0.0, 0.0}};
 
-static double stackEntropies[5][5][5][5] = {
+static ThalReal stackEntropies[5][5][5][5] = {
 	{{{-1.0, -1.0, -1.0, -1.0, -1.0},
 	{-1.0, -1.0, -1.0, -1.0, -1.0},
 	{-1.0, -1.0, -1.0, -1.0, -1.0},
@@ -213,7 +213,7 @@ static double stackEntropies[5][5][5][5] = {
 	{-1.0, -1.0, -1.0, -1.0, -1.0},
 	{-1.0, -1.0, -1.0, -1.0, -1.0}}}};
 
-static double stackEnthalpies[5][5][5][5] = {
+static ThalReal stackEnthalpies[5][5][5][5] = {
 	{{{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY},
 	{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY},
 	{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY},
@@ -364,7 +364,7 @@ static double stackEnthalpies[5][5][5][5] = {
 	{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY},
 	{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY}}}};
 
-static double stackint2Entropies[5][5][5][5] = {
+static ThalReal stackint2Entropies[5][5][5][5] = {
 	{{{-1.0, -1.0, -1.0, 12.9, -1.0},
 	{-1.0, -1.0, -1.0, 20.2, -1.0},
 	{-1.0, -1.0, -1.0, 7.4, -1.0},
@@ -515,7 +515,7 @@ static double stackint2Entropies[5][5][5][5] = {
 	{-1.0, -1.0, -1.0, -1.0, -1.0},
 	{-1.0, -1.0, -1.0, -1.0, -1.0}}}};
 
-static double stackint2Enthalpies[5][5][5][5] = {
+static ThalReal stackint2Enthalpies[5][5][5][5] = {
 	{{{_INFINITY, _INFINITY, _INFINITY, 4700.0, _INFINITY},
 	{_INFINITY, _INFINITY, _INFINITY, 7600.0, _INFINITY},
 	{_INFINITY, _INFINITY, _INFINITY, 3000.0, _INFINITY},
@@ -666,7 +666,7 @@ static double stackint2Enthalpies[5][5][5][5] = {
 	{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY},
 	{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY}}}};
 
-static double tstackEntropies[5][5][5][5] = {
+static ThalReal tstackEntropies[5][5][5][5] = {
 	{{{-1.0, -1.0, -1.0, -6.3, 1e-11},
 	{-1.0, -1.0, -1.0, -7.0, 1e-11},
 	{-1.0, -1.0, -1.0, -5.8, 1e-11},
@@ -817,7 +817,7 @@ static double tstackEntropies[5][5][5][5] = {
 	{-1.0, -1.0, -1.0, -1.0, -1.0},
 	{-1.0, -1.0, -1.0, -1.0, -1.0}}}};
 
-static double tstackEnthalpies[5][5][5][5] = {
+static ThalReal tstackEnthalpies[5][5][5][5] = {
 	{{{_INFINITY, _INFINITY, _INFINITY, -2500.0, 0.0},
 	{_INFINITY, _INFINITY, _INFINITY, -2700.0, 0.0},
 	{_INFINITY, _INFINITY, _INFINITY, -2400.0, 0.0},
@@ -968,7 +968,7 @@ static double tstackEnthalpies[5][5][5][5] = {
 	{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY},
 	{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY}}}};
 
-static double tstack2Entropies[5][5][5][5] = {
+static ThalReal tstack2Entropies[5][5][5][5] = {
 	{{{-1.0, -1.0, -1.0, -6.3, 1e-11},
 	{-1.0, -1.0, -1.0, -7.0, 1e-11},
 	{-1.0, -1.0, -1.0, -5.8, 1e-11},
@@ -1119,7 +1119,7 @@ static double tstack2Entropies[5][5][5][5] = {
 	{-1.0, -1.0, -1.0, -1.0, -1.0},
 	{-1.0, -1.0, -1.0, -1.0, -1.0}}}};
 
-static double tstack2Enthalpies[5][5][5][5] = {
+static ThalReal tstack2Enthalpies[5][5][5][5] = {
 	{{{_INFINITY, _INFINITY, _INFINITY, -2500.0, 0.0},
 	{_INFINITY, _INFINITY, _INFINITY, -2700.0, 0.0},
 	{_INFINITY, _INFINITY, _INFINITY, -2400.0, 0.0},
@@ -1270,7 +1270,7 @@ static double tstack2Enthalpies[5][5][5][5] = {
 	{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY},
 	{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY}}}};
 
-static double dangleEntropies3[5][5][5] = {
+static ThalReal dangleEntropies3[5][5][5] = {
 	{{-1.0, -1.0, -1.0, -1.1, -1.0},
 	{-1.0, -1.0, -1.0, 14.2, -1.0},
 	{-1.0, -1.0, -1.0, -13.1, -1.0},
@@ -1301,7 +1301,7 @@ static double dangleEntropies3[5][5][5] = {
 	{-1.0, -1.0, -1.0, -1.0, -1.0},
 	{-1.0, -1.0, -1.0, -1.0, -1.0}}};
 
-static double dangleEnthalpies3[5][5][5] = {
+static ThalReal dangleEnthalpies3[5][5][5] = {
 	{{_INFINITY, _INFINITY, _INFINITY, -500.0, _INFINITY},
 	{_INFINITY, _INFINITY, _INFINITY, 4700.0, _INFINITY},
 	{_INFINITY, _INFINITY, _INFINITY, -4100.0, _INFINITY},
@@ -1332,7 +1332,7 @@ static double dangleEnthalpies3[5][5][5] = {
 	{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY},
 	{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY}}};
 
-static double dangleEntropies5[5][5][5] = {
+static ThalReal dangleEntropies5[5][5][5] = {
 	{{-1.0, -1.0, -1.0, -1.0, -1.0},
 	{-1.0, -1.0, -1.0, -1.0, -1.0},
 	{-1.0, -1.0, -1.0, -1.0, -1.0},
@@ -1363,7 +1363,7 @@ static double dangleEntropies5[5][5][5] = {
 	{-1.0, -1.0, -1.0, -1.0, -1.0},
 	{-1.0, -1.0, -1.0, -1.0, -1.0}}};
 
-static double dangleEnthalpies5[5][5][5] = {
+static ThalReal dangleEnthalpies5[5][5][5] = {
 	{{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY},
 	{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY},
 	{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY},
@@ -1394,7 +1394,7 @@ static double dangleEnthalpies5[5][5][5] = {
 	{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY},
 	{_INFINITY, _INFINITY, _INFINITY, _INFINITY, _INFINITY}}};
 
-static double interiorLoopEntropies[30] = {
+static ThalReal interiorLoopEntropies[30] = {
 	-1.0, -1.0, -10.31, -11.6, -12.89, 
 	-14.18, -14.83, -15.47, -15.79, -15.79, 
 	-16.26, -16.76, -17.15, -17.41, -17.74, 
@@ -1402,7 +1402,7 @@ static double interiorLoopEntropies[30] = {
 	-19.25, -19.48, -19.7, -19.9, -20.31, 
 	-20.5, -20.68, -20.86, -21.03, -21.28};
 
-static double interiorLoopEnthalpies[30] = {
+static ThalReal interiorLoopEnthalpies[30] = {
 	_INFINITY, _INFINITY, 0.0, 0.0, 0.0, 
 	0.0, 0.0, 0.0, 0.0, 0.0, 
 	0.0, 0.0, 0.0, 0.0, 0.0, 
@@ -1410,7 +1410,7 @@ static double interiorLoopEnthalpies[30] = {
 	0.0, 0.0, 0.0, 0.0, 0.0, 
 	0.0, 0.0, 0.0, 0.0, 0.0};
 
-static double bulgeLoopEntropies[30] = {
+static ThalReal bulgeLoopEntropies[30] = {
 	-12.89, -9.35, -9.99, -10.31, -10.64, 
 	-11.28, -11.92, -12.57, -13.21, -13.86, 
 	-14.32, -14.5, -14.89, -15.47, -15.81, 
@@ -1418,7 +1418,7 @@ static double bulgeLoopEntropies[30] = {
 	-17.32, -17.55, -17.76, -17.97, -18.05, 
 	-18.24, -18.42, -18.6, -18.77, -19.02};
 
-static double bulgeLoopEnthalpies[30] = {
+static ThalReal bulgeLoopEnthalpies[30] = {
 	0.0, 0.0, 0.0, 0.0, 0.0, 
 	0.0, 0.0, 0.0, 0.0, 0.0, 
 	0.0, 0.0, 0.0, 0.0, 0.0, 
@@ -1426,7 +1426,7 @@ static double bulgeLoopEnthalpies[30] = {
 	0.0, 0.0, 0.0, 0.0, 0.0, 
 	0.0, 0.0, 0.0, 0.0, 0.0};
 
-static double hairpinLoopEntropies[30] = {
+static ThalReal hairpinLoopEntropies[30] = {
 	-1.0, -1.0, -11.28, -11.28, -10.64, 
 	-12.89, -13.54, -13.86, -14.5, -14.83, 
 	-15.29, -16.12, -16.5, -16.44, -16.77, 
@@ -1434,7 +1434,7 @@ static double hairpinLoopEntropies[30] = {
 	-18.61, -18.84, -19.05, -19.26, -19.66, 
 	-19.85, -20.04, -20.21, -20.38, -20.31};
 
-static double hairpinLoopEnthalpies[30] = {
+static ThalReal hairpinLoopEnthalpies[30] = {
 	_INFINITY, _INFINITY, 0.0, 0.0, 0.0, 
 	0.0, 0.0, 0.0, 0.0, 0.0, 
 	0.0, 0.0, 0.0, 0.0, 0.0, 

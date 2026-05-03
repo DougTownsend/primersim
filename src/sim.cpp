@@ -35,8 +35,10 @@ namespace primersim{
         return exp(dg / (-ideal_gas_constant*temp_k));
     }
 
-    double Primeanneal::dhds_to_eq_const(double dhds[2], double temp_c){
-        double dg = dhds[dh] - (temp_c+273.15) * dhds[ds];
+    double Primeanneal::dhds_to_eq_const(ThalReal dhds[2], double temp_c){
+        // dhds entries promote to double for the math; sim_pcr's chain
+        // keeps full double precision regardless of ThalReal.
+        double dg = (double)dhds[dh] - (temp_c+273.15) * (double)dhds[ds];
         return dg_to_eq_const(dg, temp_c);
     }
 
@@ -69,6 +71,50 @@ namespace primersim{
         thal_results o;
         thal(seq1_uchar, seq1_uchar, &a, THL_FAST, &o);
         return o;
+    }
+
+    void Primeanneal::populate_dimer_cache(double mv_conc, double dv_conc, double dntp_conc, double temp_c){
+        thal_args ta;
+        set_thal_default_args(&ta);
+        ta.mv = mv_conc;
+        ta.dv = dv_conc;
+        ta.dntp = dntp_conc;
+        ta.temp = 273.15 + temp_c;
+
+        const size_t N = addresses.size();
+        dimer_cache.assign(16 * N * N, {0, 0});
+
+        // Each thread takes a contiguous slice of the outer i index and
+        // computes its 4 * N * 4 sub-block. No mutex needed because each
+        // thread writes to a disjoint region of dimer_cache.
+        const unsigned int nthreads = num_cpu > 0 ? num_cpu : 1;
+        std::vector<std::thread> threads;
+        threads.reserve(nthreads);
+        size_t per_thread = (N + nthreads - 1) / nthreads;
+        for (unsigned int t = 0; t < nthreads; t++) {
+            size_t i_start = t * per_thread;
+            size_t i_end   = std::min(i_start + per_thread, N);
+            if (i_start >= i_end) break;
+            threads.emplace_back([this, i_start, i_end, N, ta]() {
+                thal_args local_ta = ta;
+                for (size_t i = i_start; i < i_end; i++) {
+                    for (int ki = 0; ki < 4; ki++) {
+                        for (size_t j = 0; j < N; j++) {
+                            for (int kj = 0; kj < 4; kj++) {
+                                thal_results o = this->calc_dimer(
+                                    this->addresses[i].get_seq(ki),
+                                    this->addresses[j].get_seq(kj),
+                                    local_ta);
+                                auto &p = this->dimer_cache[((i * 4 + ki) * N + j) * 4 + kj];
+                                p.dh = (ThalReal)o.dh;
+                                p.ds = (ThalReal)o.ds;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        for (auto &th : threads) th.join();
     }
 
     void Primeanneal::read_addresses(const char *filename, bool with_temp_c = false){
@@ -231,46 +277,39 @@ namespace primersim{
                 }
             }
 
+            // Read pre-computed dh/ds values from dimer_cache instead of
+            // calling calc_dimer. The cache must have been populated by
+            // populate_dimer_cache before sim_pcr is called.
+            const size_t N_addr = addresses.size();
+            auto cached = [this, N_addr](size_t a, int ka, size_t b, int kb) -> const dh_ds_cache_entry& {
+                return this->dimer_cache[((a * 4 + ka) * N_addr + b) * 4 + kb];
+            };
+
             for (int ii = 0; ii < 2; ii++){
                 for (int jj = 0; jj < 4; jj++){
-                    o = calc_dimer(addresses[addr].get_seq(ii), addresses[i].get_seq(jj), ta);
-                    eq.address_k_conc_vec[i].tmp_dhds[ii][jj][dh] = o.dh;
-                    eq.address_k_conc_vec[i].tmp_dhds[ii][jj][ds] = o.ds;
+                    const auto &p = cached(addr, ii, i, jj);
+                    eq.address_k_conc_vec[i].tmp_dhds[ii][jj][dh] = p.dh;
+                    eq.address_k_conc_vec[i].tmp_dhds[ii][jj][ds] = p.ds;
                 }
             }
 
-            o = calc_dimer(addresses[addr].f, addresses[i].f, ta);
-            eq.address_k_conc_vec[i].dhds_primer_f_addr_f[dh] = o.dh;
-            eq.address_k_conc_vec[i].dhds_primer_f_addr_f[ds] = o.ds;
-            o = calc_dimer(addresses[addr].f, addresses[i].f_rc, ta);
-            eq.address_k_conc_vec[i].dhds_primer_f_addr_frc[dh] = o.dh;
-            eq.address_k_conc_vec[i].dhds_primer_f_addr_frc[ds] = o.ds;
-            o = calc_dimer(addresses[addr].f, addresses[i].r, ta);
-            eq.address_k_conc_vec[i].dhds_primer_f_addr_r[dh] = o.dh;
-            eq.address_k_conc_vec[i].dhds_primer_f_addr_r[ds] = o.ds;
-            o = calc_dimer(addresses[addr].f, addresses[i].r_rc, ta);
-            eq.address_k_conc_vec[i].dhds_primer_f_addr_rrc[dh] = o.dh;
-            eq.address_k_conc_vec[i].dhds_primer_f_addr_rrc[ds] = o.ds;
-            o = calc_dimer(addresses[addr].r, addresses[i].f, ta);
-            eq.address_k_conc_vec[i].dhds_primer_r_addr_f[dh] = o.dh;
-            eq.address_k_conc_vec[i].dhds_primer_r_addr_f[ds] = o.ds;
-            o = calc_dimer(addresses[addr].r, addresses[i].f_rc, ta);
-            eq.address_k_conc_vec[i].dhds_primer_r_addr_frc[dh] = o.dh;
-            eq.address_k_conc_vec[i].dhds_primer_r_addr_frc[ds] = o.ds;
-            o = calc_dimer(addresses[addr].r, addresses[i].r, ta);
-            eq.address_k_conc_vec[i].dhds_primer_r_addr_r[dh] = o.dh;
-            eq.address_k_conc_vec[i].dhds_primer_r_addr_r[ds] = o.ds;
-            o = calc_dimer(addresses[addr].r, addresses[i].r_rc, ta);
-            eq.address_k_conc_vec[i].dhds_primer_r_addr_rrc[dh] = o.dh;
-            eq.address_k_conc_vec[i].dhds_primer_r_addr_rrc[ds] = o.ds;
+            // Map: addresses[].get_seq() returns f at 0, f_rc at 1, r at 2, r_rc at 3.
+            { const auto &p = cached(addr, 0, i, 0); eq.address_k_conc_vec[i].dhds_primer_f_addr_f[dh]   = p.dh; eq.address_k_conc_vec[i].dhds_primer_f_addr_f[ds]   = p.ds; }
+            { const auto &p = cached(addr, 0, i, 1); eq.address_k_conc_vec[i].dhds_primer_f_addr_frc[dh] = p.dh; eq.address_k_conc_vec[i].dhds_primer_f_addr_frc[ds] = p.ds; }
+            { const auto &p = cached(addr, 0, i, 2); eq.address_k_conc_vec[i].dhds_primer_f_addr_r[dh]   = p.dh; eq.address_k_conc_vec[i].dhds_primer_f_addr_r[ds]   = p.ds; }
+            { const auto &p = cached(addr, 0, i, 3); eq.address_k_conc_vec[i].dhds_primer_f_addr_rrc[dh] = p.dh; eq.address_k_conc_vec[i].dhds_primer_f_addr_rrc[ds] = p.ds; }
+            { const auto &p = cached(addr, 2, i, 0); eq.address_k_conc_vec[i].dhds_primer_r_addr_f[dh]   = p.dh; eq.address_k_conc_vec[i].dhds_primer_r_addr_f[ds]   = p.ds; }
+            { const auto &p = cached(addr, 2, i, 1); eq.address_k_conc_vec[i].dhds_primer_r_addr_frc[dh] = p.dh; eq.address_k_conc_vec[i].dhds_primer_r_addr_frc[ds] = p.ds; }
+            { const auto &p = cached(addr, 2, i, 2); eq.address_k_conc_vec[i].dhds_primer_r_addr_r[dh]   = p.dh; eq.address_k_conc_vec[i].dhds_primer_r_addr_r[ds]   = p.ds; }
+            { const auto &p = cached(addr, 2, i, 3); eq.address_k_conc_vec[i].dhds_primer_r_addr_rrc[dh] = p.dh; eq.address_k_conc_vec[i].dhds_primer_r_addr_rrc[ds] = p.ds; }
         }
 
-        double dhds_f_hairpin[2];
+        ThalReal dhds_f_hairpin[2];
         o = calc_hairpin(addresses[addr].f, ta);
         dhds_f_hairpin[dh] = o.dh;
         dhds_f_hairpin[ds] = o.ds;
 
-        double dhds_r_hairpin[2];
+        ThalReal dhds_r_hairpin[2];
         o = calc_hairpin(addresses[addr].r, ta);
         dhds_r_hairpin[dh] = o.dh;
         dhds_r_hairpin[ds] = o.ds;

@@ -87,6 +87,13 @@ namespace primersim{
         double ds;
     };
 
+    // Cached calc_dimer result (one entry per (addr1, kind1, addr2, kind2)
+    // tuple). Width depends on ThalReal — float halves it.
+    struct dh_ds_cache_entry {
+        ThalReal dh;
+        ThalReal ds;
+    };
+
     class address_k_conc{
         public:
             //fstrand[0][0] = 5' F -> F Strand Data -> RRC 3'
@@ -104,16 +111,19 @@ namespace primersim{
 
             //first index:  0=primer_f, 1=primer_r
             //second index: 0=addr_f, 1=addr_frc, 2=addr_r, 3=addr_rrc
-            double tmp_dhds[2][4][2];
+            // dh/ds values come from thal_results (double) but are stored
+            // as ThalReal here so they can shrink to 4 bytes/value in
+            // -DTHAL_USE_FLOAT builds.
+            ThalReal tmp_dhds[2][4][2];
 
-            double dhds_primer_f_addr_f[2];
-            double dhds_primer_f_addr_frc[2];
-            double dhds_primer_f_addr_r[2];
-            double dhds_primer_f_addr_rrc[2];
-            double dhds_primer_r_addr_f[2];
-            double dhds_primer_r_addr_frc[2];
-            double dhds_primer_r_addr_r[2];
-            double dhds_primer_r_addr_rrc[2];
+            ThalReal dhds_primer_f_addr_f[2];
+            ThalReal dhds_primer_f_addr_frc[2];
+            ThalReal dhds_primer_f_addr_r[2];
+            ThalReal dhds_primer_f_addr_rrc[2];
+            ThalReal dhds_primer_r_addr_f[2];
+            ThalReal dhds_primer_r_addr_frc[2];
+            ThalReal dhds_primer_r_addr_r[2];
+            ThalReal dhds_primer_r_addr_rrc[2];
 
             // Per-cycle cache of dhds_to_eq_const(tmp_dhds[..], temp_c).
             // Populated once per (address, cycle) in sim_pcr; read by
@@ -192,6 +202,12 @@ namespace primersim{
             };
             std::vector<Primeanneal::primer_info> primers;
             std::vector<Primeanneal::address> addresses;
+            // Cache of calc_dimer results, indexed as
+            //   dimer_cache[((i*4 + ki)*N + j)*4 + kj]
+            // where (i, ki) and (j, kj) are address index + sequence kind
+            // (0=f, 1=f_rc, 2=r, 3=r_rc per `address::get_seq`). Populated
+            // once by populate_dimer_cache; reused by every sim_pcr call.
+            std::vector<dh_ds_cache_entry> dimer_cache;
             unsigned int address_index;
             std::mutex addr_mtx;
             std::mutex outfile_mtx;
@@ -213,13 +229,17 @@ namespace primersim{
             void assign_addresses(const char *out_filename, double temp_c, double mv_conc, double dv_conc, double dntp_conc);
             void assign_addresses_nosort(const char *out_filename);
             void read_addresses(const char *filename, bool with_temp_c);
+            // Precompute calc_dimer for every (i, ki, j, kj) tuple. Uses
+            // num_cpu threads. Must be called after read_addresses; before
+            // sim_pcr if you want sim_pcr to skip the per-call thal work.
+            void populate_dimer_cache(double mv_conc, double dv_conc, double dntp_conc, double temp_c);
             void evaluate_addresses(const char *in_filename, const char *out_filename, double dna_conc, double primer_conc, double mv_conc, double dv_conc, double dntp_conc);
             void eval_thread(const char *out_filename, double dna_conc, double primer_conc, double mv_conc, double dv_conc, double dntp_conc);
             double sim_pcr(const char *out_filename, unsigned int addr, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc);
             void update_strand_concs(EQ &eq, int i, int addr, const std::vector<double> &temp_c_profile, int cycle, int end5, int end3);
             void calc_strand_bindings(EQ &eq, const std::vector<double> &temp_c_profile, int i, int cycle, int addr, int end5, int end3,
                                        Real &nonspec_total, Real &sum_f_weighted, Real &sum_r_weighted);
-            double dhds_to_eq_const(double dhds[2], double temp_c);
+            double dhds_to_eq_const(ThalReal dhds[2], double temp_c);
             void eval_addresses_thread(const char *out_filename, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc);
             void eval_addresses(const char *out_filename, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc);
             void shuffle_addresses(void);

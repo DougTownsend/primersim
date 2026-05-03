@@ -33,6 +33,10 @@ int main(void){
     //pa.assign_addresses_nosort("addresses.csv");
     pa.read_addresses("addresses.csv", false);
     std::cout << pa.addresses.size() << "\n";
+    // Precompute every (i, ki, j, kj) calc_dimer once. sim_pcr reads
+    // from this cache instead of calling thal at all. Uses pa.num_cpu
+    // threads internally — the dominant work in this benchmark.
+    pa.populate_dimer_cache(mv, dv, dntp, /*temp_c=*/55.0);
     //random_address_assignment(pa, 1);
     for (size_t i = 0; i < pa.addresses.size(); i++){
         FILE *regfile = fopen(regression_fname, "a");

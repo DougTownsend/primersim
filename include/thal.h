@@ -41,6 +41,19 @@
 #include <math.h>
 #include <limits.h>
 
+/* Internal floating-point precision for primer3/thal computation.
+ * Default: 64-bit double. Pass -DTHAL_USE_FLOAT to drop to 32-bit
+ * float — saves memory on the parameter tables and may run faster
+ * vectorized, at the cost of ~7-digit rather than ~15-digit precision.
+ *
+ * The public API (thal_args, thal_results, _INFINITY, ABSOLUTE_ZERO)
+ * stays double regardless. Conversion happens at the boundary. */
+#ifdef THAL_USE_FLOAT
+typedef float ThalReal;
+#else
+typedef double ThalReal;
+#endif
+
 
 #ifndef THAL_ERROR_SCORE
 # define THAL_ERROR_SCORE -_INFINITY
