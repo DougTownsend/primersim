@@ -81,35 +81,42 @@ namespace primersim{
         ta.dntp = dntp_conc;
         ta.temp = 273.15 + temp_c;
 
+        // Symmetric / triangular cache: thal(seq1, seq2) is approximately
+        // symmetric in its arguments, so we store only one of (a, b) and
+        // (b, a). With M = 4*N "sequence slots" (each of N addresses has
+        // 4 kinds: f, f_rc, r, r_rc), the cache holds the M*(M+1)/2
+        // canonical pairs (a, b) with a <= b. Index formula:
+        //   idx(a, b) = a*(2*M - a - 1)/2 + b
+        // Lookup callers swap to a <= b before indexing — see
+        // cached_dimer in sim_pcr.
         const size_t N = addresses.size();
-        dimer_cache.assign(16 * N * N, {0, 0});
+        const size_t M = 4 * N;
+        dimer_cache.assign(M * (M + 1) / 2, {0, 0});
 
-        // Each thread takes a contiguous slice of the outer i index and
-        // computes its 4 * N * 4 sub-block. No mutex needed because each
-        // thread writes to a disjoint region of dimer_cache.
+        // Cyclic distribution by `a` for load balance: each thread handles
+        // a's where a % nthreads == t. Triangular-row work decreases as
+        // a grows (row a has M-a entries), so a contiguous slice would
+        // give thread 0 most of the work and thread N-1 almost none.
         const unsigned int nthreads = num_cpu > 0 ? num_cpu : 1;
         std::vector<std::thread> threads;
         threads.reserve(nthreads);
-        size_t per_thread = (N + nthreads - 1) / nthreads;
         for (unsigned int t = 0; t < nthreads; t++) {
-            size_t i_start = t * per_thread;
-            size_t i_end   = std::min(i_start + per_thread, N);
-            if (i_start >= i_end) break;
-            threads.emplace_back([this, i_start, i_end, N, ta]() {
+            threads.emplace_back([this, t, nthreads, M, ta]() {
                 thal_args local_ta = ta;
-                for (size_t i = i_start; i < i_end; i++) {
-                    for (int ki = 0; ki < 4; ki++) {
-                        for (size_t j = 0; j < N; j++) {
-                            for (int kj = 0; kj < 4; kj++) {
-                                thal_results o = this->calc_dimer(
-                                    this->addresses[i].get_seq(ki),
-                                    this->addresses[j].get_seq(kj),
-                                    local_ta);
-                                auto &p = this->dimer_cache[((i * 4 + ki) * N + j) * 4 + kj];
-                                p.dh = (ThalReal)o.dh;
-                                p.ds = (ThalReal)o.ds;
-                            }
-                        }
+                for (size_t a = t; a < M; a += nthreads) {
+                    size_t i = a / 4;
+                    int   ki = (int)(a % 4);
+                    size_t row_offset = a * (2*M - a - 1) / 2;
+                    for (size_t b = a; b < M; b++) {
+                        size_t j = b / 4;
+                        int   kj = (int)(b % 4);
+                        thal_results o = this->calc_dimer(
+                            this->addresses[i].get_seq(ki),
+                            this->addresses[j].get_seq(kj),
+                            local_ta);
+                        auto &p = this->dimer_cache[row_offset + b];
+                        p.dh = (ThalReal)o.dh;
+                        p.ds = (ThalReal)o.ds;
                     }
                 }
             });
@@ -278,11 +285,17 @@ namespace primersim{
             }
 
             // Read pre-computed dh/ds values from dimer_cache instead of
-            // calling calc_dimer. The cache must have been populated by
-            // populate_dimer_cache before sim_pcr is called.
+            // calling calc_dimer. The cache is symmetric / triangular —
+            // it stores only canonical pairs (a <= b in the M = 4*N
+            // sequence-slot space). Swap if needed so we hit the same
+            // entry regardless of argument order.
             const size_t N_addr = addresses.size();
-            auto cached = [this, N_addr](size_t a, int ka, size_t b, int kb) -> const dh_ds_cache_entry& {
-                return this->dimer_cache[((a * 4 + ka) * N_addr + b) * 4 + kb];
+            const size_t M_total = 4 * N_addr;
+            auto cached = [this, M_total](size_t a_addr, int ka, size_t b_addr, int kb) -> const dh_ds_cache_entry& {
+                size_t a = a_addr * 4 + ka;
+                size_t b = b_addr * 4 + kb;
+                if (a > b) std::swap(a, b);
+                return this->dimer_cache[a * (2*M_total - a - 1) / 2 + b];
             };
 
             for (int ii = 0; ii < 2; ii++){

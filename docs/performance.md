@@ -1,149 +1,319 @@
-# Performance — calc_dimer cache + parallel populate
+# Performance — calc_dimer cache + parallel populate (symmetric)
 
 This experiment caches every `calc_dimer` result that any `sim_pcr`
 might need, computes them in parallel across `num_cpu` threads at
 startup, and replaces the per-`sim_pcr` `thal` calls with cache
-lookups.
+lookups. The cache exploits thal's near-symmetry: only one of
+`thal(A, B)` and `thal(B, A)` is stored per pair, so populate work
+and storage both halve.
 
 ## Setup
 
-The cache is `Primeanneal::dimer_cache`, a flat
-`std::vector<dh_ds_cache_entry>` of size `16 * N * N` indexed as
+The cache is `Primeanneal::dimer_cache`, a packed triangular array of
+`dh_ds_cache_entry` covering the canonical pairs `(a, b)` with
+`a ≤ b` over `M = 4·N` "sequence slots" (each address has 4 kinds:
+f, f_rc, r, r_rc). Index formula:
 
 ```
-dimer_cache[((i * 4 + ki) * N + j) * 4 + kj]
+idx(a, b) = a*(2*M - a - 1)/2 + b   for a <= b
 ```
 
-where `(i, ki)` and `(j, kj)` are `(address index, sequence kind)` and
-`kind ∈ {0=f, 1=f_rc, 2=r, 3=r_rc}`. `populate_dimer_cache` divides
-the outer `i` index across threads — each thread writes its own slice
-of the cache, no mutex needed. `sim_pcr` reads only.
+Total entries: `M*(M+1)/2 ≈ 8·N²` (down from `16·N²` in the
+asymmetric version). `cached_dimer(addr1, ki, addr2, kj)` swaps to
+canonical ordering before indexing, so both calling directions hit
+the same entry.
+
+`populate_dimer_cache` distributes the outer `a` axis cyclically
+across `num_cpu` threads (`a % nthreads == t`) — a contiguous slice
+would be heavily imbalanced because triangular row `a` has only
+`M-a` entries. `sim_pcr` reads only.
 
 `test_eq.cpp` calls `pa.populate_dimer_cache(...)` once after
 `read_addresses` and before the simulation loop.
 
 ## Wall-time results (N = 979)
 
-| build | wall | speedup | regression md5 |
+| build | wall | speedup vs baseline | regression md5 |
 |---|---:|---:|---|
-| baseline (no cache, no `-DTHAL_USE_FLOAT`)        | 14 m 18 s | — | `0b8ca853…` |
-| **cache + parallel populate, ThalReal=double**    | **1 m 27 s** | **9.86×** | `0b8ca853…` (matches) |
-| cache + parallel populate, ThalReal=float         | 1 m 27 s     | 9.86×    | `8a927c84…` (matches prior float baseline) |
+| baseline (no cache)                                          | 14 m 18 s | — | `0b8ca853…` |
+| asymmetric cache + parallel populate (ThalReal=double)        | 1 m 27 s | 9.9×  | `0b8ca853…` (matches baseline) |
+| asymmetric cache + parallel populate (ThalReal=float)         | 1 m 27 s | 9.9×  | `8a927c84…` |
+| **symmetric cache + parallel populate (ThalReal=double)**     | **57.3 s** | **15.0×** | `55b677b1…` (drift, see accuracy) |
 
-Output md5 in `double` mode is bit-identical to the pre-cache
-baseline. The float output matches the previous float experiment —
-the cache rearranges the thal work but doesn't change values.
+The symmetric cache is **34 % faster than the asymmetric version**
+and **15× faster than baseline**. md5 differs from the asymmetric
+run because the symmetric lookup picks one of `thal(A, B)` /
+`thal(B, A)` and `thal` isn't bitwise symmetric — see the accuracy
+section below.
 
-CPU time vs wall time tells the story of where time is spent:
+CPU time vs wall time:
 
-|           | wall   | user  | parallelism |
+| build | wall | user | parallelism |
 |---|---:|---:|---:|
-| double    | 87 s   | 1295 s | 14.9× (avg) |
-| float     | 87 s   | 1334 s | 15.3× (avg) |
+| asymmetric cache (double)  | 87 s   | 1295 s | 14.9× (avg) |
+| **symmetric cache (double)**  | **57.3 s** | **673 s** | **11.7× (avg)** |
 
-The benchmark has two phases:
+The benchmark has two phases. Estimated breakdown from CPU/wall
+arithmetic:
 
-| phase | wall (estimated) | CPU usage |
+| build | populate (wall) | sim_pcr loop (wall) | total |
+|---|---:|---:|---:|
+| asymmetric cache  | ~39 s  | ~48 s  | 87 s |
+| **symmetric cache**  | **~20 s** | **~37 s** | **57 s** |
+
+The populate phase halves cleanly (half the unique pairs). The
+sim_pcr loop also got faster — likely from better L1/L2 cache
+behavior with a 122 MB working set vs the prior 245 MB, plus
+slightly tighter inner-loop indexing.
+
+## Profile (perf, `-O3 -g`, ThalReal=float)
+
+Sampled at 999 Hz with `--call-graph dwarf`, 1.29 M samples over
+the 87 s run. perf samples per-thread accurately, no instrumentation
+overhead, and exposes hardware counters that gprof can't.
+
+**Inclusive call graph** (time accumulating into children):
+
+```
+94.4 %  populate_dimer_cache lambdas (32 worker threads)
+   ├── 91.0 %  thal()                            (89.7 % "self")
+   │   ├── 86.1 %  fillMatrix_dimer              (inlined into thal)
+   │   │   ├── 39.2 %  calc_bulge_internal_dimer (inlined)
+   │   │   └── ~46 %   direct DP arithmetic / inlined helpers
+   │   ├──  4.4 %  RSH (right-side helper)
+   │   └──  1.7 %  LSH (left-side helper)
+ 1.5 %  sim_pcr (single-threaded cache-lookup + cycle math)
+```
+
+So the populate phase is **94 % of all CPU time** (across 32 cores),
+and the single-threaded sim_pcr loop is only 1.5 %.
+
+**Hardware counters** (`perf stat -d`):
+
+| metric | value | reading |
 |---|---:|---|
-| `populate_dimer_cache` | ~39 s | 32 threads, near-saturating |
-| `sim_pcr` loop (979 calls) | ~48 s | 1 thread, cache lookups only |
+| wall time | 87.6 s | matches the optimized baseline |
+| CPU utilization | 15.4× of 32 | parallel populate well-saturated; serial sim_pcr drags average |
+| IPC | **1.53** | scalar with stalls; no SIMD |
+| **Branch miss rate** | **7.61 %** | high — target is < 3 % for hot loops |
+| L1 d-cache miss rate | 0.56 % | very low — hot data fits in L1 |
+| LLC counters | not supported | this CPU doesn't expose them |
 
-So the previously-dominant 14 m of single-threaded thal compresses
-to ~39 s spread across 32 cores, and the lookup-only `sim_pcr` loop
-runs in another ~48 s.
+The branch miss rate is the headline. With 828 B retired branches ×
+7.61 % = **63 B mispredicts × ~15 cycles each ≈ 17 % of total cycles
+wasted on branch recovery**. That's the dominant inefficiency in
+the thal DP. The L1 miss rate of 0.56 % means the parameter tables
+and DP matrices fit comfortably in L1; we are not memory-bound.
 
-## Profile (gprof, `-O2 -pg`)
-
-`gprof`'s call counts and per-call times are unreliable in
-multi-threaded code (the `mcount` counters race; thread time is
-sampled inconsistently). Treat the *shape* of the profile as
-informative; ignore absolute counts. With that caveat:
-
-```
-ThalReal = double                 ThalReal = float
-─────────────────────────────     ─────────────────────────────
-65.2% thal()                      64.2% thal()
-29.2% calc_bulge_internal_dimer   30.0% calc_bulge_internal_dimer
- 1.96% RSH                          2.09% RSH
- 0.92% LSH                          0.97% LSH
- 0.75% EQ::calc_cx                  0.67% EQ::calc_cx
- 0.64% calc_strand_bindings         0.65% calc_strand_bindings
- 0.44% update_strand_concs          0.44% update_strand_concs
- 0.43% EQ::calc_bound_concs         0.48% EQ::calc_bound_concs
- 0.29% sim_pcr (self)               0.25% sim_pcr (self)
- 0.03% populate_dimer_cache lambda  0.04% populate_dimer_cache lambda
-```
-
-The shape is essentially unchanged from the pre-cache profile: thal
-still dominates total CPU time. What's different is the **wall-time**
-distribution — those CPU seconds are now spread across 32 cores
-instead of 1, so wall time drops 10×.
-
-The float profile is essentially identical to double. `thal()`
-internal arithmetic does run on `float` (`-DTHAL_USE_FLOAT` switches
-the `ThalReal` typedef), but on x86-64 the underlying scalar SSE2
-ops are similar speed for `float` and `double` — the dimer DP is
-branchy and table-lookup heavy, not a vectorizable arithmetic loop.
-
-`-pg` profile binaries ran ~12 m in this experiment, vs 1m27s for
-the optimized binary. Almost all of that overhead is in the
-populate phase: gprof's per-function instrumentation fires on every
-thal internal call (billions across 32 threads), and the contention
-on the global `mcount` counter serializes much of it. **Use the `time`
-output, not the gprof totals, to compare wall-clock performance.**
+This explains directly why **`-DTHAL_USE_FLOAT` produced no
+speedup**: float would help if we were memory-bound (smaller working
+set) or vectorizable (wider SIMD). We are neither — we're stalling
+on branch recovery, which is independent of value width.
 
 ## Accuracy
 
-ThalReal=float vs the double baseline (compared cell-by-cell across
-all 364,188 numeric cells in `regression_new.csv`):
+Two comparisons matter here: ThalReal=float vs ThalReal=double under
+the asymmetric cache (a value-width comparison), and the symmetric
+cache vs the asymmetric cache (an orientation-of-thal comparison).
+Both are vs the same set of 364,188 numeric cells in
+`regression_new.csv`.
+
+**ThalReal=float vs the asymmetric-double baseline:**
 
 | tolerance | matching cells |
 |---|---|
-| exact | 169,242 / 364,188 (46.5 %) |
+| exact     | 169,242 / 364,188 (46.5 %) |
 | rel < 1e-9 | 194,013 / 364,188 (53.3 %) |
 | rel < 1e-6 | 340,880 / 364,188 (93.6 %) |
 | rel < 1e-3 | **364,188 / 364,188 (100 %)** |
 | max rel error | **2.63e-4** |
 
+**Symmetric cache vs the asymmetric-double baseline:**
+
+| tolerance | matching cells |
+|---|---|
+| exact     | 359,535 / 364,188 (98.7 %) |
+| rel < 1e-9 | 359,766 / 364,188 (98.8 %) |
+| rel < 1e-6 | 361,781 / 364,188 (99.3 %) |
+| rel < 1e-3 | 364,153 / 364,188 (99.99 %) |
+| max rel error | **4.15e-3** |
+
+The symmetric version's drift is concentrated in a handful of cells
+— the worst is in column 11 (total\_nonspec\_r) at row 15627, where
+the asymmetric and symmetric runs differ by 0.4 %. That comes from
+empirically observing thal asymmetry: `thal(A, B)` differs from
+`thal(B, A)` in the 7th significant digit on **41 % of pairs in a
+50-address sample**. The values are equal at any reasonable
+thermodynamic precision (~3 decimal digits matter for ΔG predictions),
+but the per-pair pick of one orientation propagates through to
+cumulative differences in some downstream cells. 99.99 % of cells
+agree to better than 1e-3 relative.
+
 The outlier diagnostic
 ([scripts/diagnose_outliers.py](../scripts/diagnose_outliers.py))
-returns the same buckets in both modes: 976 ok, 0 R-stuck, 0 F-stuck,
-3 both-fail (the same three primer-design issues at addresses 686,
-803, 322).
+returns the same buckets across all three modes (asymmetric double,
+asymmetric float, symmetric double): 976 ok, 0 R-stuck, 0 F-stuck,
+3 both-fail (addresses 686, 803, 322 — the same three primer-design
+issues each time).
 
-## Caveats
+---
 
-- The cache populate is now the dominant phase (~45 % of wall time).
-  At larger N the populate scales as O(N²) thal calls — the wall
-  cost grows quadratically.
-- The cache memory grows O(N²) too. See
-  [docs/memory_usage.md](memory_usage.md). Up to N ≈ 2 k it's a
-  ~1 GB allocation; at N = 10 k it's 25 GB (double) and prohibitive.
-- For N ≫ 1000, alternatives:
-  1. Drop the cache entirely and parallelize the per-`sim_pcr`
-     setup loop across threads. Same total thal work but better
-     scaling.
-  2. Exploit thal's near-symmetry — `thal(A, B)` differs from
-     `thal(B, A)` only at the 7th significant digit (41 % of pairs
-     in a 50-address sample). A symmetric cache halves the
-     populate work and the cache memory at the cost of sub-9-digit
-     precision drift.
-  3. Move `populate_dimer_cache` onto a sparse / on-demand model
-     — only fill entries that a sim_pcr actually requests. With
-     `M < N` sim_pcr calls each touching 12·N pairs, the active
-     set is `12·M·N`, smaller than the full `16·N²` when `M < N`.
+## Where to look for further speedup
 
-## Recommendation
+Three options remain after the symmetric cache. Listed in order of
+expected wall-time gain at this point in the optimization curve.
 
-For workloads up to **N ≈ 1000-2000 addresses on a 32-core machine**,
-the cache + parallel populate is a clear win: ~10× wall-time
-speedup, no accuracy change, modest memory cost.
+### ✅ Done: symmetric cache
 
-Above that, the O(N²) cache becomes the bottleneck and a different
-strategy (parallel sim_pcrs, lazy/sparse cache, or symmetric cache)
-is needed.
+Implemented and measured: 87 s → 57 s (**1.52× speedup**), cache
+memory halved (245 MB → 122 MB at N = 979 double). Output drift is
+0.4 % max relative on 0.01 % of cells; outlier diagnosis unchanged.
+See "Wall-time results" above.
 
-ThalReal=float vs ThalReal=double has no meaningful wall-time
-impact under this caching strategy. If you want the smaller cache
-footprint (122 MB vs 245 MB at N = 979), float is fine; otherwise
-keep the default double.
+### 1. Parallelize the `sim_pcr` loop in `test_eq.cpp`
+
+**What**: post-populate, the `for (i = 0; i < N; i++) sim_pcr(i, ...)`
+loop in `test_eq.cpp` runs single-threaded. With the symmetric cache
+that loop accounts for ~37 s of the 57 s total wall. With 32
+threads it would compress to ~1.2 s.
+
+**How**: replace the loop with a thread-pool pattern like the
+existing `eval_addresses_thread` in `address_eval.cpp`. Each thread
+takes the next address index from an atomic counter, runs `sim_pcr`,
+and appends its row to `regression_new.csv` under `outfile_mtx`. The
+`dimer_cache` is read-only after populate so it's freely shared.
+
+**Effect — wall time**:
+- sim_pcr loop: ~37 s → ~1.2 s.
+- Populate phase unchanged at ~20 s.
+- Total: 57 s → **~22 s (≈61 % faster)**.
+
+**Effect — memory**:
+- Each worker thread has its own `EQ` (304 B + per-N `address_k_conc_vec`
+  ≈ 1.18 MB at N = 979). 32 workers = ~38 MB — small relative to the
+  cache.
+
+**Caveats**:
+- File output ordering changes (rows interleave by address index in
+  whatever order threads finish). Already true in the existing
+  `eval_addresses_thread` path. Fine for analysis as long as you
+  don't rely on cycle-by-cycle ordering matching address index.
+- Thread-safety in `sim_pcr` itself: each call constructs its own EQ
+  and writes only to that EQ + the shared output file (under
+  mutex). No issue.
+
+**Risk level**: low. Standard pattern, already proven by
+`eval_addresses_thread`.
+
+### 2. Tighten the cache to entries `sim_pcr` actually reads
+
+**What**: the symmetric cache holds entries for every kind pair
+`(ki, kj) ∈ [0..4) × [0..4)`. But `sim_pcr` only reads first-kinds
+`ki ∈ {0=f, 1=f_rc, 2=r}` — the `target.r_rc` first-arg is never
+queried. That's 25 % of the populated entries that no caller reads.
+
+**How**: parameterize the cache slot space by "useful kinds" instead
+of all four. The canonical-pair index becomes more involved (the
+useful-kind set isn't a clean prefix of the 4-kind set), but is
+straightforward to implement.
+
+**Effect — wall time**:
+- Populate work drops ~25 %: 20 s → ~15 s.
+- sim_pcr unchanged.
+- Total: 57 s → **~52 s (≈9 % faster)** standalone, or in combination
+  with #1, 22 s → ~17 s.
+
+**Effect — memory**:
+- Symmetric cache drops ~25 %: 122 MB → ~92 MB (double); 61 MB → 46 MB
+  (float).
+
+**Caveats**:
+- None on accuracy — we're literally not computing entries no one
+  reads. Output bit-identical to the current symmetric cache.
+- Indexing is more fiddly than the symmetric formula already in
+  place. Easy to get the canonical normalization wrong.
+
+**Risk level**: zero accuracy risk; modest implementation risk
+(indexing).
+
+### 3. Reduce branch mispredictions inside thal's DP
+
+**What**: 17 % of all cycles in this run are stalled on mispredicted
+branch recovery (63 B mispredicts × ~15 cyc each, out of 5.6 T total
+cycles). The mispredicts are concentrated in `calc_bulge_internal_dimer`
+and `fillMatrix_dimer`'s inner loops, which evaluate per-cell DP
+recurrences with data-dependent control flow.
+
+**How** (in rough increasing order of effort):
+
+(a) **Add `__builtin_expect` hints** on the most common branches.
+Cheap, but only helps when the bias is strong and consistent.
+Probably 2-4 % wall-time win; depends on whether the branches are
+biased or genuinely 50/50.
+
+(b) **Replace conditionals with `std::min`/`std::max`/`fmin`/`fmax`
+arithmetic** where the DP is computing element-wise min/max over
+candidates. CPUs implement these as branchless `cmov`/`vminps`
+instructions. Eliminates the misprediction entirely for those sites.
+Likely 5-10 % wall-time win.
+
+(c) **Restructure the DP to be branchless / vectorizable**: pad the
+recurrence to fixed length (no inner loop break), use SIMD over the
+"j" inner axis. Significant rewrite; would also lift IPC from 1.53
+toward ~3-4 (vectorized FP). Potential win: 30-50 % wall-time.
+
+**Effect — wall time** (in the populate phase, where this matters):
+- Option (a): 87 s → ~84 s.
+- Option (b): 87 s → ~80 s.
+- Option (c): 87 s → ~50-60 s.
+
+**Caveats**:
+- This is upstream primer3 code. Unless we fork primer3, every
+  upstream rebase has to re-apply the changes.
+- Branchless rewrites of DP code are notoriously easy to break.
+  Need a regression test that's tighter than 9-digit print
+  precision; the inner DP scores need bit-equal preservation or we
+  risk picking different alignments.
+- Only the populate phase benefits — `sim_pcr` is already cache
+  lookups. Wall-time impact is bounded by the populate fraction
+  (~45 % of total wall, post-caching).
+
+**Risk level**: high for option (c); moderate for (a)/(b). Most
+work, most fragile, vendored code, not all wins are guaranteed.
+
+### Composability and recommendation
+
+Combined ceiling, starting from the current symmetric cache (57 s):
+
+| variant | wall (est.) | from baseline 14m18s | from current 57 s |
+|---|---:|---:|---:|
+| current (symmetric cache + parallel populate) | 57 s | 15.0× | — |
+| + #1 (parallel sim_pcr loop)                  | ~22 s | 39× | 2.6× |
+| + #1 + #2 (tighten kinds)                     | ~17 s | 50× | 3.4× |
+| + #1 + #2 + #3(b) (branchless DP min/max)     | ~14 s | 61× | 4.1× |
+| + #1 + #2 + #3(c) (vectorized DP)             | ~9 s | 95× | 6.3× |
+
+Practical recommendation:
+
+- **#1 first** — biggest single win at this point in the curve
+  (~2.6×). Standard threading pattern, infrastructure already exists
+  in `eval_addresses_thread`, no accuracy concerns.
+- **#2 second** — small win on top of #1, no accuracy risk, gives
+  another ~25 % memory headroom for larger N.
+- **#3 only if you really need it** — primer3 is upstream code and
+  rewriting its DP is a fork-maintenance burden. The 17 % cycles
+  wasted on branch mispredicts are real but the engineering cost is
+  significant. Worth it only if the workflow runs frequently enough
+  that minutes saved over months exceed the maintenance cost.
+
+## Caveats on the perf data
+
+- Single-machine measurement on the 32-core dev box. Mileage will
+  vary on different CPUs (branch predictor quality, cache sizes).
+- `perf record --call-graph dwarf` produced ~10 GB of `perf.data` for
+  this run. Use `--call-graph fp` if disk I/O matters; results are
+  similar but slightly less reliable for inlined functions.
+- `perf stat`'s `<not supported>` lines for LLC events on this CPU
+  mean we couldn't directly measure cache thrashing past L1. Given
+  the L1 miss rate of 0.56 % is already very low, L2/L3 wouldn't
+  have changed the picture.
