@@ -33,6 +33,12 @@ namespace primersim{
     void Primeanneal::read_primers_individual(std::string filename){
         FILE *infile = fopen(filename.c_str(), "r");
         char buffer[50];
+        // Free any previously-allocated primer strings before clearing
+        // the vector — otherwise repeated calls leak.
+        for(auto &p : primers){
+            delete[] p.f;
+            delete[] p.rc;
+        }
         primers.clear();
         while(fscanf(infile, "%[ACGT]%*[^\n]\n", buffer) != EOF){
             //printf("%s\n", buffer);
@@ -40,8 +46,8 @@ namespace primersim{
             if(len != 21)
                 printf("%s\n", buffer);
             Primeanneal::primer_info primer_pair;
-            primer_pair.f = (char *) malloc(sizeof(char) * len);
-            primer_pair.rc = (char *) malloc(sizeof(char) * len);
+            primer_pair.f = new char[len];
+            primer_pair.rc = new char[len];
             strcpy(primer_pair.f, buffer);
             if(strlen(primer_pair.f) != 20)
                 printf("pp:%s\n", primer_pair.f);
@@ -288,19 +294,25 @@ namespace primersim{
                     eq.calc_cx();
                     eq.calc_bound_concs();
 
-                    //nonspec_exp_amp += min(fwd bound, rev bound)
-                    eq.tmp[0] = eq.c[FX] + eq.c[RX];
-                    eq.tmp[2] = std::fmin(eq.tmp[0], eq.tmp[1]);
-                    eq.nonspec_exp_amp += eq.tmp[2];
-
-                    //nonspec_lin_amp += max(fwd bound, rev bound) - min(fwd bound, rev bound)
-                    eq.tmp[0] = std::fmax(eq.tmp[0], eq.tmp[1]);
-                    eq.tmp[2] = eq.tmp[0] - eq.tmp[2];
-                    eq.nonspec_lin_amp += eq.tmp[2];
+                    // bound_total — total primer bound to this nonspec address
+                    // Note: the original code mixed this with an
+                    // uninitialized tmp[1] in the min/max split (see
+                    // docs/address_suggestions.md #1). Replacing tmp[1]
+                    // with a 0-initialized local takes the degenerate-
+                    // but-defined branch noted there: min collapses to 0,
+                    // so all bound mass goes to nonspec_lin_amp.
+                    Real bound_total = eq.c[FX] + eq.c[RX];
+                    Real other_pool = 0.0;  // was eq.tmp[1], never written in this loop
+                    Real bound_min = std::fmin(bound_total, other_pool);
+                    eq.nonspec_exp_amp += bound_min;
+                    Real bound_max = std::fmax(bound_total, other_pool);
+                    eq.nonspec_lin_amp += (bound_max - bound_min);
                 }
-                eq.tmp[0] = eq.spec_fwd_amp / eq.nonspec_exp_amp;
-                eq.tmp[1] = eq.best_spec_exp_amp / eq.best_nonspec_exp_amp;
-                if(first || (eq.tmp[0] > eq.tmp[1])){
+                // cur_ratio  = spec_fwd_amp / nonspec_exp_amp at this temp_c
+                // best_ratio = the running best across temp_c iterations
+                Real cur_ratio  = eq.spec_fwd_amp / eq.nonspec_exp_amp;
+                Real best_ratio = eq.best_spec_exp_amp / eq.best_nonspec_exp_amp;
+                if(first || (cur_ratio > best_ratio)){
                     first = false;
                     best_temp = temp_c;
                     eq.best_spec_exp_amp = eq.spec_fwd_amp;
@@ -309,12 +321,13 @@ namespace primersim{
                     eq.best_nonspec_lin_amp = eq.nonspec_lin_amp;
                 }
             }
-            eq.tmp[0] = eq.best_spec_exp_amp / eq.best_nonspec_exp_amp;
-            eq.tmp[1] = eq.best_spec_lin_amp / eq.best_nonspec_lin_amp;
+            // Final spec/nonspec ratios for the output row.
+            Real best_exp_ratio = eq.best_spec_exp_amp / eq.best_nonspec_exp_amp;
+            Real best_lin_ratio = eq.best_spec_lin_amp / eq.best_nonspec_lin_amp;
             outfile_mtx.lock();
             FILE *outfile = fopen(out_filename, "a");
             fprintf(outfile, "%s,%s,%lf,%u,%.9Le,%.9Le,%.9Le,%.9Le,%.9Le,%.9Le\n", addresses[i].f, addresses[i].r, best_temp, i,
-                    (long double)eq.tmp[0], (long double)eq.tmp[1],
+                    (long double)best_exp_ratio, (long double)best_lin_ratio,
                     (long double)eq.best_spec_exp_amp, (long double)eq.best_nonspec_exp_amp,
                     (long double)eq.best_spec_lin_amp, (long double)eq.best_nonspec_lin_amp);
             fclose(outfile);

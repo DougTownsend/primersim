@@ -16,10 +16,17 @@ namespace primersim{
 
     Primeanneal::~Primeanneal(){
         for(auto &p : primers){
-            free(p.f);
-            free(p.rc);
+            delete[] p.f;
+            delete[] p.rc;
         }
         primers.clear();
+        for(auto &a : addresses){
+            delete[] a.f;
+            delete[] a.r;
+            delete[] a.f_rc;
+            delete[] a.r_rc;
+        }
+        addresses.clear();
     }
 
     double Primeanneal::dg_to_eq_const(double dg, double temp_c){
@@ -65,6 +72,14 @@ namespace primersim{
     }
 
     void Primeanneal::read_addresses(const char *filename, bool with_temp_c = false){
+        // Free any previously-allocated address strings before clearing
+        // the vector — otherwise repeated calls leak.
+        for(auto &a : addresses){
+            delete[] a.f;
+            delete[] a.r;
+            delete[] a.f_rc;
+            delete[] a.r_rc;
+        }
         addresses.clear();
         FILE *infile = fopen(filename, "r");
         address a;
@@ -78,10 +93,10 @@ namespace primersim{
                 if(fscanf(infile, "%[ACGT],%[ACGT]%*[^\n]\n", tmp_f, tmp_r) == EOF)
                     break;
             }
-            a.f = (char *)malloc(strlen(tmp_f)+1);
-            a.r = (char *)malloc(strlen(tmp_f)+1);
-            a.f_rc = (char *)malloc(strlen(tmp_f)+1);
-            a.r_rc = (char *)malloc(strlen(tmp_f)+1);
+            a.f = new char[strlen(tmp_f)+1];
+            a.r = new char[strlen(tmp_f)+1];
+            a.f_rc = new char[strlen(tmp_f)+1];
+            a.r_rc = new char[strlen(tmp_f)+1];
             strcpy(a.f, tmp_f);
             strcpy(a.r, tmp_r);
             reverse_comp(a.f, a.f_rc);
@@ -131,7 +146,15 @@ namespace primersim{
         eq.address_k_conc_vec[i].rstrand_change[primerr][end5_rc] += eq.c[RX];
     }
 
-    void Primeanneal::calc_strand_bindings(EQ &eq, const std::vector<double> &temp_c_profile, int i, int cycle, int addr, int end5, int end3){
+    // Called 25 times per address per cycle from sim_pcr's inner loop.
+    // The three Real& parameters are accumulators owned by the caller:
+    //   nonspec_total   — sum of nonspecific strand concentrations across
+    //                     all (end5, end3) pairs and addresses
+    //   sum_f_weighted  — sum(strand_conc * F-primer-binding K), used by
+    //                     the caller to derive the average k_FX
+    //   sum_r_weighted  — same but for the R primer / k_RX
+    void Primeanneal::calc_strand_bindings(EQ &eq, const std::vector<double> &temp_c_profile, int i, int cycle, int addr, int end5, int end3,
+                                            Real &nonspec_total, Real &sum_f_weighted, Real &sum_r_weighted){
         (void)temp_c_profile; (void)cycle;  // K values now come from the cache
         int bind_addr5 = (end5 == 0) ? i : addr;
         int bind_addr3 = (end3 == 0) ? i : addr;
@@ -155,40 +178,32 @@ namespace primersim{
             default: break;
         }
 
-        // tmp[0] = sum of nonspecific concentrations
-        // tmp[1] = sum(f primer eq const * partial concentration)
-        // tmp[2] = sum(r primer eq const * partial concentration)
-
         // K values come from the per-cycle cache populated in sim_pcr.
         const auto &K_i = eq.address_k_conc_vec[i].tmp_dhds_K;
 
         // Reverse strand bindings
         // 5' R -> R Strand -> FRC 3'
-        eq.tmp[0] += eq.address_k_conc_vec[i].rstrand[end5][end3];
-
-        eq.tmp[1] += eq.address_k_conc_vec[bind_addr5].rstrand[end5][end3] * K_i[0][binding_end5];
-        eq.tmp[2] += eq.address_k_conc_vec[bind_addr5].rstrand[end5][end3] * K_i[1][binding_end5];
+        nonspec_total += eq.address_k_conc_vec[i].rstrand[end5][end3];
+        sum_f_weighted += eq.address_k_conc_vec[bind_addr5].rstrand[end5][end3] * K_i[0][binding_end5];
+        sum_r_weighted += eq.address_k_conc_vec[bind_addr5].rstrand[end5][end3] * K_i[1][binding_end5];
 
         // 3' Binding
-        eq.tmp[0] += eq.address_k_conc_vec[i].rstrand[end5][end3];
-
-        eq.tmp[1] += eq.address_k_conc_vec[bind_addr3].rstrand[end5][end3] * K_i[0][binding_end3];
-        eq.tmp[2] += eq.address_k_conc_vec[bind_addr3].rstrand[end5][end3] * K_i[1][binding_end3];
+        nonspec_total += eq.address_k_conc_vec[i].rstrand[end5][end3];
+        sum_f_weighted += eq.address_k_conc_vec[bind_addr3].rstrand[end5][end3] * K_i[0][binding_end3];
+        sum_r_weighted += eq.address_k_conc_vec[bind_addr3].rstrand[end5][end3] * K_i[1][binding_end3];
 
 
         if (end5 == 0) binding_end5 = 0; //Address F
         if (end3 == 0) binding_end3 = 3; //Address RRC
         // 5' F -> F Strand -> RRC 3'
-        eq.tmp[0] += eq.address_k_conc_vec[i].fstrand[end5][end3];
-
-        eq.tmp[1] += eq.address_k_conc_vec[bind_addr5].fstrand[end5][end3] * K_i[0][binding_end5];
-        eq.tmp[2] += eq.address_k_conc_vec[bind_addr5].fstrand[end5][end3] * K_i[1][binding_end5];
+        nonspec_total += eq.address_k_conc_vec[i].fstrand[end5][end3];
+        sum_f_weighted += eq.address_k_conc_vec[bind_addr5].fstrand[end5][end3] * K_i[0][binding_end5];
+        sum_r_weighted += eq.address_k_conc_vec[bind_addr5].fstrand[end5][end3] * K_i[1][binding_end5];
 
         // 3' Binding
-        eq.tmp[0] += eq.address_k_conc_vec[i].fstrand[end5][end3];
-
-        eq.tmp[1] += eq.address_k_conc_vec[bind_addr3].fstrand[end5][end3] * K_i[0][binding_end3];
-        eq.tmp[2] += eq.address_k_conc_vec[bind_addr3].fstrand[end5][end3] * K_i[1][binding_end3];
+        nonspec_total += eq.address_k_conc_vec[i].fstrand[end5][end3];
+        sum_f_weighted += eq.address_k_conc_vec[bind_addr3].fstrand[end5][end3] * K_i[0][binding_end3];
+        sum_r_weighted += eq.address_k_conc_vec[bind_addr3].fstrand[end5][end3] * K_i[1][binding_end3];
     }
 
     double Primeanneal::sim_pcr(const char *out_filename, unsigned int addr, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc){
@@ -266,15 +281,17 @@ namespace primersim{
         if(out_filename != NULL){
             FILE *outfile = fopen(out_filename, "a");
             fprintf(outfile, "%02u,%lf,0.000000000,0.000000000,%.9Le,%.9Le,%.9Le,%.9Le", 0, temp_c_profile[0], (long double)eq.c0[F], (long double)eq.c0[R], (long double)eq.address_k_conc_vec[addr].fstrand[addr_end][addr_end], (long double)eq.address_k_conc_vec[addr].rstrand[addr_end][addr_end]);
-            eq.tmp[0] = 0.0;
-            eq.tmp[1] = 0.0;
+            // Cycle-0 dump: sum the initial fstrand/rstrand totals across
+            // all non-target addresses for the nonspec columns.
+            Real init_sum_fstrand = 0.0;
+            Real init_sum_rstrand = 0.0;
             for(unsigned int i = 0; i < addresses.size(); i++){
                 if (i == addr)
                     continue;
-                eq.tmp[0] += eq.address_k_conc_vec[i].fstrand[addr_end][addr_end];
-                eq.tmp[1] += eq.address_k_conc_vec[i].rstrand[addr_end][addr_end];
+                init_sum_fstrand += eq.address_k_conc_vec[i].fstrand[addr_end][addr_end];
+                init_sum_rstrand += eq.address_k_conc_vec[i].rstrand[addr_end][addr_end];
             }
-            fprintf(outfile, ",%.9Le,0.000000000,%.9Le,0.000000000\n", (long double)eq.tmp[0], (long double)eq.tmp[1]);
+            fprintf(outfile, ",%.9Le,0.000000000,%.9Le,0.000000000\n", (long double)init_sum_fstrand, (long double)init_sum_rstrand);
             fclose(outfile);
         }
         for(unsigned int cycle = 1; cycle <= pcr_cycles; cycle++){
@@ -298,23 +315,28 @@ namespace primersim{
                 kc.dhds_K_primer_r_addr_rrc = dhds_to_eq_const(kc.dhds_primer_r_addr_rrc, temp_c_profile[cycle-1]);
             }
 
-            eq.tmp[0] = 0.0; //Total nonspec concentration
-            eq.tmp[1] = 0.0; //sum(f primer eq const * partial concentration)
-            eq.tmp[2] = 0.0; //sum(r primer eq const * partial concentration)
+            // Per-cycle accumulators populated by calc_strand_bindings:
+            //   nonspec_total   — total nonspecific strand concentration
+            //   sum_f_weighted  — sum(strand_conc * F-primer K), used to
+            //                     derive the average k_FX
+            //   sum_r_weighted  — same for R primer / k_RX
+            Real nonspec_total  = 0.0;
+            Real sum_f_weighted = 0.0;
+            Real sum_r_weighted = 0.0;
 
             for(unsigned int i = 0; i < addresses.size(); i++){
                 for(int end5 = 0; end5 < 5; end5++){
                     for (int end3 = 0; end3 < 5; end3++){
-                        calc_strand_bindings(eq, temp_c_profile, i, cycle, addr, end5, end3);
+                        calc_strand_bindings(eq, temp_c_profile, i, cycle, addr, end5, end3,
+                                              nonspec_total, sum_f_weighted, sum_r_weighted);
                     }
                 }
             }
             //Set k[K_FX] and k[K_RX] to average eq constant
-            eq.k[K_FX] = eq.tmp[1] / eq.tmp[0];
-            eq.k[K_RX] = eq.tmp[2] / eq.tmp[0];
+            eq.k[K_FX] = sum_f_weighted / nonspec_total;
+            eq.k[K_RX] = sum_r_weighted / nonspec_total;
 
-            //tmp[0] still holds the total nonspecific concentration
-            eq.c0[X] = eq.tmp[0];
+            eq.c0[X] = nonspec_total;
 
             eq.solve_eq();
 
@@ -352,43 +374,43 @@ namespace primersim{
                 }
             }
 
-            eq.tmp[0] = eq.address_k_conc_vec[addr].total_f_conc / eq.address_k_conc_vec[addr].last_f_conc - 1.0;
-            eq.tmp[1] = eq.address_k_conc_vec[addr].total_r_conc / eq.address_k_conc_vec[addr].last_r_conc - 1.0;
+            // Per-cycle target growth ratios for the active address's F
+            // and R strands (printed in the cycle's first output row).
+            Real f_growth_ratio = eq.address_k_conc_vec[addr].total_f_conc / eq.address_k_conc_vec[addr].last_f_conc - 1.0;
+            Real r_growth_ratio = eq.address_k_conc_vec[addr].total_r_conc / eq.address_k_conc_vec[addr].last_r_conc - 1.0;
 
             eq.spec_total = eq.address_k_conc_vec[addr].total_f_conc + eq.address_k_conc_vec[addr].total_r_conc;
 
             if(out_filename != NULL){
                 FILE *outfile = fopen(out_filename, "a");
-                fprintf(outfile, "%02u,%lf,%.9Lf,%.9Lf,%.9Le,%.9Le,%.9Le,%.9Le", cycle, temp_c_profile[cycle-1], (long double)eq.tmp[0], (long double)eq.tmp[1], (long double)eq.c0[F], (long double)eq.c0[R], (long double)eq.address_k_conc_vec[addr].total_f_conc, (long double)eq.address_k_conc_vec[addr].total_r_conc);
+                fprintf(outfile, "%02u,%lf,%.9Lf,%.9Lf,%.9Le,%.9Le,%.9Le,%.9Le", cycle, temp_c_profile[cycle-1], (long double)f_growth_ratio, (long double)r_growth_ratio, (long double)eq.c0[F], (long double)eq.c0[R], (long double)eq.address_k_conc_vec[addr].total_f_conc, (long double)eq.address_k_conc_vec[addr].total_r_conc);
                 fclose(outfile);
             }
 
-            eq.tmp[0] = 0.0;
-            eq.tmp[1] = 0.0;
-            eq.tmp[2] = 0.0;
-            eq.tmp[3] = 0.0;
+            // Nonspec totals across all non-target addresses, for the
+            // continuation row of the cycle's output.
+            Real total_nonspec_f = 0.0;
+            Real last_nonspec_f  = 0.0;
+            Real total_nonspec_r = 0.0;
+            Real last_nonspec_r  = 0.0;
             eq.nonspec_total = 0.0;
             for(unsigned int i = 0; i < addresses.size(); i++){
                 if (i == addr)
                     continue;
-                eq.tmp[0] += eq.address_k_conc_vec[i].total_f_conc;
-                eq.tmp[1] += eq.address_k_conc_vec[i].last_f_conc;
-                eq.tmp[2] += eq.address_k_conc_vec[i].total_r_conc;
-                eq.tmp[3] += eq.address_k_conc_vec[i].last_r_conc;
+                total_nonspec_f += eq.address_k_conc_vec[i].total_f_conc;
+                last_nonspec_f  += eq.address_k_conc_vec[i].last_f_conc;
+                total_nonspec_r += eq.address_k_conc_vec[i].total_r_conc;
+                last_nonspec_r  += eq.address_k_conc_vec[i].last_r_conc;
                 eq.nonspec_total += eq.address_k_conc_vec[i].total_f_conc;
                 eq.nonspec_total += eq.address_k_conc_vec[i].total_r_conc;
             }
-            Real total_nonspec_f = eq.tmp[0];
-            Real last_nonspec_f  = eq.tmp[1];
-            Real total_nonspec_r = eq.tmp[2];
-            Real last_nonspec_r  = eq.tmp[3];
-            eq.tmp[1] = total_nonspec_f / last_nonspec_f - 1.0;
-            eq.tmp[3] = total_nonspec_r / last_nonspec_r - 1.0;
+            Real nonspec_f_growth = total_nonspec_f / last_nonspec_f - 1.0;
+            Real nonspec_r_growth = total_nonspec_r / last_nonspec_r - 1.0;
             eq.last_nonspec_frc_total = total_nonspec_f;
-            eq.last_nonspec_rrc_total = eq.tmp[1];
+            eq.last_nonspec_rrc_total = nonspec_f_growth;
             if(out_filename != NULL){
                 FILE *outfile = fopen(out_filename, "a");
-                fprintf(outfile, ",%.9Le,%.9Lf,%.9Le,%.9Lf\n", (long double)total_nonspec_f, (long double)eq.tmp[1], (long double)total_nonspec_r, (long double)eq.tmp[3]);
+                fprintf(outfile, ",%.9Le,%.9Lf,%.9Le,%.9Lf\n", (long double)total_nonspec_f, (long double)nonspec_f_growth, (long double)total_nonspec_r, (long double)nonspec_r_growth);
                 fclose(outfile);
             }
         }

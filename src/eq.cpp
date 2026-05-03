@@ -11,8 +11,6 @@ namespace primersim{
         fprintf(outfile, "%s,", s.c_str());
         for(int i = 0; i < 2; i++)
             fprintf(outfile, "last_val[%d],%.9Le,", i, (long double)last_val[i]);
-        for(int i = 0; i < 4; i++)
-            fprintf(outfile, "tmp[%d],%.9Le,", i, (long double)tmp[i]);
         for(int i = 0; i < 10; i++)
             fprintf(outfile, "c[%d],%.9Le,", i, (long double)c[i]);
         for(int i = 0; i < 3; i++)
