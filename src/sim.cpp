@@ -4,6 +4,11 @@
 #include <string.h>
 #include <stdlib.h>
 #include <thread>
+#include <atomic>
+#include <random>
+#include <numeric>
+#include <algorithm>
+#include <sys/stat.h>
 
 #include "thal.h"
 #include "eq.hpp"
@@ -111,6 +116,14 @@ namespace primersim{
             pairings.push_back(pr);
         }
         fclose(infile);
+    }
+
+    void Primeanneal::write_pairings(const char *filename){
+        FILE *outfile = fopen(filename, "w");
+        for (const auto &pr : pairings) {
+            fprintf(outfile, "%d,%d\n", pr.f_idx, pr.r_idx);
+        }
+        fclose(outfile);
     }
 
     void Primeanneal::populate_dimer_cache(double mv_conc, double dv_conc, double dntp_conc, double temp_c){
@@ -296,7 +309,7 @@ namespace primersim{
         sum_r_weighted += eq.address_k_conc_vec[bind_addr3].fstrand[end5][end3] * K_i[1][binding_end3];
     }
 
-    double Primeanneal::sim_pcr(const char *out_filename, unsigned int addr, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc){
+    double Primeanneal::sim_pcr(const std::vector<pairing> &pairings_in, const char *out_filename, unsigned int addr, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc, bool log_cycles){
         EQ eq;
         thal_args ta;
         thal_results o;
@@ -305,7 +318,7 @@ namespace primersim{
         ta.dv = dv_conc;
         ta.dntp = dntp_conc;
         ta.temp = 273.15 + 55;
-        const size_t N = pairings.size();
+        const size_t N = pairings_in.size();
         eq.address_k_conc_vec.resize(N);
         eq.last_nonspec_frc_total = 0.0;
         eq.last_nonspec_rrc_total = 0.0;
@@ -329,9 +342,9 @@ namespace primersim{
             // Cache is symmetric / triangular over M = 2*P sequence slots
             // — swap to a <= b before indexing.
             const size_t M_total = 2 * primer_pool.size();
-            auto cached = [this, M_total](size_t a_pair, int ka, size_t b_pair, int kb) -> const dh_ds_cache_entry& {
-                const auto &pa = this->pairings[a_pair];
-                const auto &pb = this->pairings[b_pair];
+            auto cached = [this, &pairings_in, M_total](size_t a_pair, int ka, size_t b_pair, int kb) -> const dh_ds_cache_entry& {
+                const auto &pa = pairings_in[a_pair];
+                const auto &pb = pairings_in[b_pair];
                 int pi_a = (ka & 2) ? pa.r_idx : pa.f_idx;
                 int pi_b = (kb & 2) ? pb.r_idx : pb.f_idx;
                 size_t a = (size_t)pi_a * 2 + (ka & 1);
@@ -360,19 +373,19 @@ namespace primersim{
         }
 
         ThalReal dhds_f_hairpin[2];
-        o = calc_hairpin(primer_pool[pairings[addr].f_idx].seq, ta);
+        o = calc_hairpin(primer_pool[pairings_in[addr].f_idx].seq, ta);
         dhds_f_hairpin[dh] = o.dh;
         dhds_f_hairpin[ds] = o.ds;
 
         ThalReal dhds_r_hairpin[2];
-        o = calc_hairpin(primer_pool[pairings[addr].r_idx].seq, ta);
+        o = calc_hairpin(primer_pool[pairings_in[addr].r_idx].seq, ta);
         dhds_r_hairpin[dh] = o.dh;
         dhds_r_hairpin[ds] = o.ds;
 
         eq.c0[F] = primer_f_conc;
         eq.c0[R] = primer_r_conc;
 
-        if(out_filename != NULL){
+        if(log_cycles){
             // Each cycle row written by sim_pcr has 12 comma-separated columns.
             // Cycle 0 fills columns 3, 4, 10, 12 with literal zeros (no growth
             // measurement is meaningful before any cycle has run); subsequent
@@ -492,7 +505,7 @@ namespace primersim{
 
             eq.spec_total = eq.address_k_conc_vec[addr].total_f_conc + eq.address_k_conc_vec[addr].total_r_conc;
 
-            if(out_filename != NULL){
+            if(log_cycles){
                 // Columns 1..8 of the cycle row. See the cycle-0 fprintf
                 // above for the full 12-column layout.
                 FILE *outfile = fopen(out_filename, "a");
@@ -521,7 +534,7 @@ namespace primersim{
             Real nonspec_r_growth = total_nonspec_r / last_nonspec_r - 1.0;
             eq.last_nonspec_frc_total = total_nonspec_f;
             eq.last_nonspec_rrc_total = nonspec_f_growth;
-            if(out_filename != NULL){
+            if(log_cycles){
                 // Columns 9..12 of the cycle row, completing the line. See
                 // the cycle-0 fprintf for the full 12-column layout.
                 FILE *outfile = fopen(out_filename, "a");
@@ -534,7 +547,7 @@ namespace primersim{
     }
 
 
-    void Primeanneal::eval_addresses_thread(const char *out_filename, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc){
+    void Primeanneal::eval_addresses_thread(std::vector<double> *ratios, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc){
         while(true){
             unsigned int i;
             addr_mtx.lock();
@@ -543,24 +556,154 @@ namespace primersim{
             addr_mtx.unlock();
             if(i >= pairings.size())
                 break;
-            double ratio = sim_pcr(NULL, i, temp_c_profile.size(), temp_c_profile, dna_conc, primer_f_conc, primer_r_conc, mv_conc, dv_conc, dntp_conc);
-            outfile_mtx.lock();
-            FILE *outfile = fopen(out_filename, "a");
-            fprintf(outfile, "%u,%e\n", i, ratio);
-            fclose(outfile);
-            outfile_mtx.unlock();
+            double ratio = sim_pcr(this->pairings, NULL, i, temp_c_profile.size(), temp_c_profile, dna_conc, primer_f_conc, primer_r_conc, mv_conc, dv_conc, dntp_conc, /*log_cycles=*/false);
+            (*ratios)[i] = ratio;
         }
     }
 
-    void Primeanneal::eval_addresses(const char *out_filename, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc){
+    // Log10-spaced histogram of amplification ratios. Bins span the
+    // [HIST_LOG_MIN, HIST_LOG_MAX] decade range with HIST_BIN_PER_DECADE
+    // resolution. Non-positive ratios go in the first row (lo=hi=0);
+    // anything outside the range goes in dedicated under/overflow rows.
+    static void write_log_histogram(const char *filename, const std::vector<double> &ratios){
+        constexpr double log_min = -10.0;
+        constexpr double log_max =  10.0;
+        constexpr int bin_per_decade = 5;            // 0.2 decade per bin
+        constexpr int n_bins = (int)((log_max - log_min) * bin_per_decade);
+        std::vector<unsigned int> bins(n_bins, 0);
+        unsigned int nonpositive = 0, underflow = 0, overflow = 0;
+        for (double v : ratios) {
+            if (!(v > 0.0)) { nonpositive++; continue; }
+            double lv = std::log10(v);
+            if (lv <  log_min) { underflow++; continue; }
+            if (lv >= log_max) { overflow++;  continue; }
+            int idx = (int)(((lv - log_min) / (log_max - log_min)) * n_bins);
+            bins[idx]++;
+        }
+        FILE *f = fopen(filename, "w");
+        fprintf(f, "bin_lo,bin_hi,count\n");
+        fprintf(f, "0,0,%u\n", nonpositive);
+        fprintf(f, "-inf,%e,%u\n", std::pow(10.0, log_min), underflow);
+        for (int i = 0; i < n_bins; i++) {
+            double lo = std::pow(10.0, log_min + (log_max - log_min) * i       / (double)n_bins);
+            double hi = std::pow(10.0, log_min + (log_max - log_min) * (i + 1) / (double)n_bins);
+            fprintf(f, "%e,%e,%u\n", lo, hi, bins[i]);
+        }
+        fprintf(f, "%e,inf,%u\n", std::pow(10.0, log_max), overflow);
+        fclose(f);
+    }
+
+    void Primeanneal::eval_addresses(const char *out_filename, const char *hist_filename, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc){
         address_index = 0;
+        std::vector<double> ratios(pairings.size(), 0.0);
         std::vector<std::thread> threads;
         for(unsigned int i = 0; i < num_cpu; i++){
-            threads.push_back(std::thread(&Primeanneal::eval_addresses_thread, this, out_filename, temp_c_profile.size(), temp_c_profile,  dna_conc, primer_f_conc, primer_r_conc, mv_conc, dv_conc, dntp_conc));
+            threads.push_back(std::thread(&Primeanneal::eval_addresses_thread, this, &ratios, temp_c_profile.size(), temp_c_profile, dna_conc, primer_f_conc, primer_r_conc, mv_conc, dv_conc, dntp_conc));
         }
-
         for (auto &t : threads)
             t.join();
 
+        if (out_filename != NULL) {
+            FILE *outfile = fopen(out_filename, "w");
+            for (size_t i = 0; i < ratios.size(); i++)
+                fprintf(outfile, "%zu,%e\n", i, ratios[i]);
+            fclose(outfile);
+        }
+        if (hist_filename != NULL) {
+            write_log_histogram(hist_filename, ratios);
+        }
+    }
+
+    // Random partition of all `pool_size` primers into pool_size/2
+    // (f_idx, r_idx) pairs. Every primer is used exactly once, and
+    // any primer is eligible for either slot — the canonical F/R
+    // role split from pairings.csv is NOT preserved. Used by
+    // sweep_pairings to draw fresh trial assignments.
+    static std::vector<pairing> random_pairings(
+            size_t pool_size, std::mt19937 &rng){
+        std::vector<int> perm(pool_size);
+        std::iota(perm.begin(), perm.end(), 0);
+        std::shuffle(perm.begin(), perm.end(), rng);
+        const size_t n_pairs = pool_size / 2;
+        std::vector<pairing> result(n_pairs);
+        for (size_t i = 0; i < n_pairs; i++) {
+            result[i].f_idx = perm[2 * i];
+            result[i].r_idx = perm[2 * i + 1];
+        }
+        return result;
+    }
+
+    void Primeanneal::sweep_pairings(
+            const char *out_dir,
+            int n_trials,
+            const std::vector<int> &temperatures_c,
+            unsigned int pcr_cycles,
+            double dna_conc, double primer_f_conc, double primer_r_conc,
+            double mv_conc, double dv_conc, double dntp_conc){
+        // Best-effort mkdir; ignore EEXIST. Caller can also pre-create.
+        mkdir(out_dir, 0755);
+
+        // n_trials == 0 means "loop forever, assume external kill" —
+        // useful with LSF -W where the wall-time limit is the only
+        // termination signal. Otherwise stop after n_trials trials.
+        // Per-trial work unit: one worker fully owns a trial and writes
+        // its CSV at the end. Output is one row per pair with columns:
+        //   f_seq, r_seq, <temp1>C, <temp2>C, ...
+        // SIGTERM mid-trial leaves no orphan — the trial just doesn't
+        // produce a file.
+        std::atomic<int> next_trial{0};
+        auto worker = [&]() {
+            // Each worker has its own random_device-seeded RNG, drawn
+            // independently from /dev/urandom. No master seed / no
+            // pre-generated state — each pairing is built only when a
+            // worker picks up the trial.
+            std::random_device rd;
+            std::mt19937 worker_rng(rd());
+            while (true) {
+                int trial = next_trial.fetch_add(1);
+                if (n_trials > 0 && trial >= n_trials) break;
+                std::vector<pairing> local_pairings =
+                    random_pairings(this->primer_pool.size(), worker_rng);
+                const size_t N = local_pairings.size();
+                const size_t T = temperatures_c.size();
+
+                // ratios[pair][temp_idx]
+                std::vector<std::vector<double>> ratios(N, std::vector<double>(T, 0.0));
+                for (size_t i = 0; i < N; i++) {
+                    for (size_t ti = 0; ti < T; ti++) {
+                        std::vector<double> profile((size_t)pcr_cycles,
+                                                    (double)temperatures_c[ti]);
+                        ratios[i][ti] = sim_pcr(local_pairings, NULL, (unsigned int)i,
+                                                pcr_cycles, profile,
+                                                dna_conc, primer_f_conc, primer_r_conc,
+                                                mv_conc, dv_conc, dntp_conc,
+                                                /*log_cycles=*/false);
+                    }
+                }
+
+                char fname[512];
+                snprintf(fname, sizeof(fname), "%s/trial_%04d.csv", out_dir, trial);
+                FILE *f = fopen(fname, "w");
+                fprintf(f, "f_seq,r_seq");
+                for (int t : temperatures_c) fprintf(f, ",%dC", t);
+                fprintf(f, "\n");
+                for (size_t i = 0; i < N; i++) {
+                    const char *fseq = this->primer_pool[local_pairings[i].f_idx].seq;
+                    const char *rseq = this->primer_pool[local_pairings[i].r_idx].seq;
+                    fprintf(f, "%s,%s", fseq, rseq);
+                    for (size_t ti = 0; ti < T; ti++)
+                        fprintf(f, ",%e", ratios[i][ti]);
+                    fprintf(f, "\n");
+                }
+                fclose(f);
+            }
+        };
+
+        const unsigned int nthreads = num_cpu > 0 ? num_cpu : 1;
+        std::vector<std::thread> threads;
+        threads.reserve(nthreads);
+        for (unsigned int t = 0; t < nthreads; t++)
+            threads.emplace_back(worker);
+        for (auto &t : threads) t.join();
     }
 }

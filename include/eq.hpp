@@ -3,6 +3,7 @@
 #include "thal.h"
 #include <mutex>
 #include <cstdlib>
+#include <cstdint>
 #include <cmath>
 #include <limits>
 
@@ -265,6 +266,10 @@ namespace primersim{
             // previous pairings; primer_pool is untouched, so the dimer
             // cache survives this call.
             void read_pairings(const char *filename);
+            // Dump the current pairings to an "f_idx,r_idx" CSV. Format
+            // round-trips through read_pairings. Used by pairing sweeps
+            // to save the trial's assignment alongside its histogram.
+            void write_pairings(const char *filename);
             // Precompute every canonical thal pair (primer, kind, primer,
             // kind) under a fixed buffer condition. Uses num_cpu threads.
             // Call after read_primer_pool. Output is pairing-agnostic —
@@ -272,13 +277,52 @@ namespace primersim{
             void populate_dimer_cache(double mv_conc, double dv_conc, double dntp_conc, double temp_c);
             void evaluate_addresses(const char *in_filename, const char *out_filename, double dna_conc, double primer_conc, double mv_conc, double dv_conc, double dntp_conc);
             void eval_thread(const char *out_filename, double dna_conc, double primer_conc, double mv_conc, double dv_conc, double dntp_conc);
-            double sim_pcr(const char *out_filename, unsigned int addr, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc);
+            // pairings_in names the F/R partner indices for this
+            // simulation; primer_pool and dimer_cache are shared
+            // (read-only) state. addr indexes into pairings_in. Taking
+            // pairings as a parameter — rather than reading
+            // this->pairings — lets multiple trials run sim_pcr in
+            // parallel against different pairing assignments.
+            //
+            // log_cycles=true writes the 12-column per-cycle CSV trace
+            // to out_filename (append mode). When false (e.g. pairing
+            // sweeps that only need the final ratio), out_filename is
+            // ignored and no file I/O happens — saves ~12 fopen/fclose
+            // cycles per call.
+            double sim_pcr(const std::vector<pairing> &pairings_in, const char *out_filename, unsigned int addr, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc, bool log_cycles);
             void update_strand_concs(EQ &eq, int i, int addr, const std::vector<double> &temp_c_profile, int cycle, int end5, int end3);
             void calc_strand_bindings(EQ &eq, const std::vector<double> &temp_c_profile, int i, int cycle, int addr, int end5, int end3,
                                        Real &nonspec_total, Real &sum_f_weighted, Real &sum_r_weighted);
             double dhds_to_eq_const(ThalReal dhds[2], double temp_c);
-            void eval_addresses_thread(const char *out_filename, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc);
-            void eval_addresses(const char *out_filename, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc);
+            // Worker for eval_addresses: pulls pair indices off
+            // address_index and stores each sim_pcr ratio into
+            // (*ratios)[i]. No file I/O happens here — eval_addresses
+            // writes results after threads join.
+            void eval_addresses_thread(std::vector<double> *ratios, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc);
+            // Run sim_pcr for every pairing, multithreaded. Writes a
+            // pair_idx,ratio CSV to out_filename (NULL skips). If
+            // hist_filename is non-NULL, also writes a log10-spaced
+            // histogram of the ratios — one row per bin.
+            void eval_addresses(const char *out_filename, const char *hist_filename, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc);
+            // Multithreaded sweep over n_trials random pairing
+            // assignments. Each trial draws a fresh full-pool random
+            // pairing (no F/R role constraint), then runs sim_pcr per
+            // pair × per temperature (constant temp for all pcr_cycles).
+            // One CSV per trial in out_dir:
+            //   trial_NNNN.csv  with columns: f_seq, r_seq, <T1>C, <T2>C, ...
+            // Each row is one pair's amplification ratio at every
+            // temperature. Per-trial granularity (one worker fully
+            // owns a trial), so SIGTERM mid-trial leaves no orphan —
+            // the trial just doesn't produce a file.
+            //
+            // n_trials == 0 means loop indefinitely (useful with
+            // LSF -W where wall-time is the only termination signal);
+            // otherwise stop after n_trials trials.
+            //
+            // Each worker draws its own seed from std::random_device
+            // (i.e. /dev/urandom on Linux), so back-to-back processes
+            // and concurrent workers always get independent sequences.
+            void sweep_pairings(const char *out_dir, int n_trials, const std::vector<int> &temperatures_c, unsigned int pcr_cycles, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc);
             void shuffle_addresses(void);
     };
 }
