@@ -96,13 +96,19 @@ namespace primersim{
         char *rc;
     };
 
-    // An (F-primer-index, R-primer-index) tuple naming one PCR pair.
-    // Indices reference Primeanneal::primer_pool. A "pairing" — the
-    // full assignment of F/R partners across an experiment — is the
-    // vector Primeanneal::pairings.
+    // An (F-primer, R-primer) tuple naming one PCR pair. *_idx points
+    // into Primeanneal::primer_pool; *_rc=true means use that primer's
+    // reverse complement (primer_pool[idx].rc) instead of its canonical
+    // sequence (primer_pool[idx].seq). On disk this is encoded as
+    // "<idx>[r],<idx>[r]" — e.g. "0r,4" pairs the RC of primer 0 with
+    // the seq of primer 4. A "pairing" — the full assignment of F/R
+    // partners across an experiment — is the vector
+    // Primeanneal::pairings.
     struct pairing {
-        int f_idx;
-        int r_idx;
+        int  f_idx;
+        int  r_idx;
+        bool f_rc;
+        bool r_rc;
     };
 
     // Cached calc_dimer result (one entry per (addr1, kind1, addr2, kind2)
@@ -129,11 +135,18 @@ namespace primersim{
 
             //first index:  0=primer_f, 1=primer_r
             //second index: 0=addr_f, 1=addr_frc, 2=addr_r, 3=addr_rrc
-            // dh/ds values come from thal_results (double) but are stored
-            // as ThalReal here so they can shrink to 4 bytes/value in
-            // -DTHAL_USE_FLOAT builds.
+            // tmp_dhds: total interaction (thal_any). tmp_dhds_3p: only
+            // alignments where the primer's 3' end is at the duplex end
+            // (thal_end1 with primer as seq1) — the productive /
+            // amplifying portion. dh/ds values come from thal_results
+            // (double) but are stored as ThalReal here so they can
+            // shrink to 4 bytes/value in -DTHAL_USE_FLOAT builds.
             ThalReal tmp_dhds[2][4][2];
+            ThalReal tmp_dhds_3p[2][4][2];
 
+            // Specific (primer × address-region) interactions used by
+            // update_strand_concs. _3p variants are the
+            // 3'-end-anchored (productive) portion only.
             ThalReal dhds_primer_f_addr_f[2];
             ThalReal dhds_primer_f_addr_frc[2];
             ThalReal dhds_primer_f_addr_r[2];
@@ -142,18 +155,32 @@ namespace primersim{
             ThalReal dhds_primer_r_addr_frc[2];
             ThalReal dhds_primer_r_addr_r[2];
             ThalReal dhds_primer_r_addr_rrc[2];
+            ThalReal dhds_primer_f_addr_frc_3p[2];
+            ThalReal dhds_primer_r_addr_frc_3p[2];
+            ThalReal dhds_primer_f_addr_rrc_3p[2];
+            ThalReal dhds_primer_r_addr_rrc_3p[2];
 
-            // Per-cycle cache of dhds_to_eq_const(tmp_dhds[..], temp_c).
-            // Populated once per (address, cycle) in sim_pcr; read by
-            // calc_strand_bindings (25 reads per address per cycle).
+            // Per-cycle K caches (populated once per address per cycle
+            // in sim_pcr).
+            //   tmp_dhds_K        = K(thal_any)             — total
+            //   tmp_dhds_K_3p     = K(thal_end1)            — amplifying
+            //   tmp_dhds_K_nonamp = K(any − end1, dh/ds sub) — non-amp;
+            //                       set to 0 when total == 3p (i.e. all
+            //                       binding is already 3'-end-anchored)
+            //                       so we don't model a phantom 0-ΔG
+            //                       (K=1) interaction.
             Real tmp_dhds_K[2][4];
+            Real tmp_dhds_K_3p[2][4];
+            Real tmp_dhds_K_nonamp[2][4];
 
-            // Per-cycle cache for the four dhds_primer_*_addr_{frc,rrc}
-            // fields read by update_strand_concs.
-            Real dhds_K_primer_f_addr_frc;
-            Real dhds_K_primer_r_addr_frc;
-            Real dhds_K_primer_f_addr_rrc;
-            Real dhds_K_primer_r_addr_rrc;
+            // Per-cycle cache for the dhds_primer_*_addr_{frc,rrc}
+            // fields read by update_strand_concs. Only the _3p (amp)
+            // version drives extension; the original total K is no
+            // longer needed in update_strand_concs.
+            Real dhds_K_primer_f_addr_frc_3p;
+            Real dhds_K_primer_r_addr_frc_3p;
+            Real dhds_K_primer_f_addr_rrc_3p;
+            Real dhds_K_primer_r_addr_rrc_3p;
     };
 
     class EQ{
@@ -228,14 +255,21 @@ namespace primersim{
             std::vector<primer_seq> primer_pool;
             std::vector<pairing> pairings;
 
-            // Symmetric / triangular cache of calc_dimer results, keyed by
-            // primer (not pairing) so it survives pairing reshuffles.
-            // Layout: M = 2*primer_pool.size() sequence slots (each primer
-            // contributes seq=kind 0 and rc=kind 1). Canonical pair (a, b)
-            // with a <= b at:
+            // Symmetric / triangular cache of calc_dimer (thal_any)
+            // results, keyed by primer (not pairing) so it survives
+            // pairing reshuffles. M = 2*primer_pool.size() sequence
+            // slots; each primer contributes seq=kind 0 and rc=kind 1.
+            // Canonical pair (a, b) with a <= b at:
             //   idx(a, b) = a*(2*M - a - 1)/2 + b
-            // Populated once by populate_dimer_cache after read_primer_pool.
+            // Populated by populate_dimer_cache after read_primer_pool.
             std::vector<dh_ds_cache_entry> dimer_cache;
+            // Square cache of thal_end1 results — primer-3'-end-anchored
+            // (productive) alignment energies. seq1 is index `a`, seq2
+            // is index `b`; thal_end1 anchors seq1's 3' end so the
+            // result is asymmetric → no canonical-order swap. Layout:
+            //   idx(a, b) = a*M + b
+            // Same M as dimer_cache. Populated alongside dimer_cache.
+            std::vector<dh_ds_cache_entry> dimer_3p_cache;
             unsigned int address_index;
             std::mutex addr_mtx;
             std::mutex outfile_mtx;

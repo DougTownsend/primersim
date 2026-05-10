@@ -1,8 +1,8 @@
 #!/bin/bash
 #BSUB -q shared_memory
-#BSUB -n 32
+#BSUB -n 16
 #BSUB -R "span[hosts=1]"
-#BSUB -W 960
+#BSUB -W 360
 #BSUB -J "prime_sweep[1-8]"
 #BSUB -o /share/tuck/dktownse/prime-anneal/lsf.%J.%I.out
 #BSUB -e /share/tuck/dktownse/prime-anneal/lsf.%J.%I.err
@@ -23,4 +23,4 @@ mkdir -p "${out_dir}"
 
 echo "host: $(hostname)  job array index: ${LSB_JOBINDEX}  out: ${out_dir}"
 
-./test_eq 32 sweep 0 "$out_dir"
+./test_eq "${LSB_DJOB_NUMPROC:-32}" sweep 0 "$out_dir"

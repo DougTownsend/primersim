@@ -2,3 +2,9 @@
 test_eq
 todo.md
 NCSU_HPC.md
+*.png
+lsf.*.out
+lsf.*.err
+sweep_results/
+sweep_results_*.zip
+verify_pairing*/

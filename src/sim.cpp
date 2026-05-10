@@ -108,11 +108,30 @@ namespace primersim{
         fclose(infile);
     }
 
+    // Parse one "<idx>[r]" token (e.g. "12" or "12r") into idx + rc flag.
+    // Returns true on success. Used by read_pairings.
+    static bool parse_pair_token(const char *s, int *idx_out, bool *rc_out) {
+        char *end = nullptr;
+        long v = strtol(s, &end, 10);
+        if (end == s) return false;
+        *idx_out = (int)v;
+        *rc_out  = (*end == 'r' || *end == 'R');
+        return true;
+    }
+
     void Primeanneal::read_pairings(const char *filename){
         pairings.clear();
         FILE *infile = fopen(filename, "r");
-        pairing pr;
-        while (fscanf(infile, "%d,%d ", &pr.f_idx, &pr.r_idx) == 2) {
+        char line[128];
+        while (fgets(line, sizeof(line), infile)) {
+            // Each line is "<idx>[r],<idx>[r]". The "r" suffix on either
+            // token marks RC of that primer. Pre-RC files (no "r"
+            // anywhere) parse correctly and produce f_rc=r_rc=false.
+            char a[32], b[32];
+            if (sscanf(line, "%31[0-9rR],%31[0-9rR]", a, b) != 2) continue;
+            pairing pr;
+            if (!parse_pair_token(a, &pr.f_idx, &pr.f_rc)) continue;
+            if (!parse_pair_token(b, &pr.r_idx, &pr.r_rc)) continue;
             pairings.push_back(pr);
         }
         fclose(infile);
@@ -121,7 +140,9 @@ namespace primersim{
     void Primeanneal::write_pairings(const char *filename){
         FILE *outfile = fopen(filename, "w");
         for (const auto &pr : pairings) {
-            fprintf(outfile, "%d,%d\n", pr.f_idx, pr.r_idx);
+            fprintf(outfile, "%d%s,%d%s\n",
+                    pr.f_idx, pr.f_rc ? "r" : "",
+                    pr.r_idx, pr.r_rc ? "r" : "");
         }
         fclose(outfile);
     }
@@ -134,39 +155,63 @@ namespace primersim{
         ta.dntp = dntp_conc;
         ta.temp = 273.15 + temp_c;
 
-        // Symmetric / triangular cache, keyed by (primer index, kind).
-        // Each primer in primer_pool contributes 2 sequence slots: kind=0
-        // for primer.seq and kind=1 for primer.rc. M = 2 * P slots total.
-        // The cache holds the M*(M+1)/2 canonical pairs (a, b) with a <= b.
-        //   idx(a, b) = a*(2*M - a - 1)/2 + b
-        // sim_pcr's cached() lambda swaps to canonical order before
-        // indexing.
+        // Two caches keyed by (primer_index, kind={seq=0, rc=1}) over
+        // M = 2 * primer_pool.size() slots:
+        //
+        //   dimer_cache (thal_any, total interaction):
+        //     symmetric → triangular storage; canonical (a, b) with
+        //     a <= b at idx(a, b) = a*(2*M - a - 1)/2 + b. sim_pcr's
+        //     cached() lambda swaps to canonical order before indexing.
+        //
+        //   dimer_3p_cache (thal_end1, primer-3'-end-anchored portion):
+        //     asymmetric → square storage; idx(a, b) = a*M + b. seq1 is
+        //     index `a`; thal_end1 anchors seq1's 3' end at the duplex
+        //     end. Lookup convention is "primer in seq1 slot, strand
+        //     in seq2 slot" so the result is the productive
+        //     (amplifying) alignment energy.
         const size_t P = primer_pool.size();
         const size_t M = 2 * P;
         dimer_cache.assign(M * (M + 1) / 2, {0, 0});
+        dimer_3p_cache.assign(M * M, {0, 0});
 
-        // Cyclic distribution by `a` for load balance: triangular-row work
-        // decreases as a grows (row a has M-a entries), so a contiguous
-        // slice would unbalance heavily.
+        // Cyclic distribution by `a` for load balance — the triangular
+        // half (any) has decreasing per-row work as a grows; the square
+        // half (end1) is uniform. Cyclic averages both out.
         const unsigned int nthreads = num_cpu > 0 ? num_cpu : 1;
         std::vector<std::thread> threads;
         threads.reserve(nthreads);
         for (unsigned int t = 0; t < nthreads; t++) {
             threads.emplace_back([this, t, nthreads, M, ta]() {
-                thal_args local_ta = ta;
+                thal_args ta_any = ta; ta_any.type = thal_any;
+                thal_args ta_3p  = ta; ta_3p.type  = thal_end1;
                 for (size_t a = t; a < M; a += nthreads) {
                     size_t i = a / 2;
-                    int   ki = (int)(a % 2);
+                    int    ki = (int)(a % 2);
                     char *seq_a = (ki == 0) ? this->primer_pool[i].seq : this->primer_pool[i].rc;
-                    size_t row_offset = a * (2*M - a - 1) / 2;
-                    for (size_t b = a; b < M; b++) {
+                    size_t row_off_any = a * (2*M - a - 1) / 2;
+                    size_t row_off_3p  = a * M;
+                    for (size_t b = 0; b < M; b++) {
                         size_t j = b / 2;
-                        int   kj = (int)(b % 2);
+                        int    kj = (int)(b % 2);
                         char *seq_b = (kj == 0) ? this->primer_pool[j].seq : this->primer_pool[j].rc;
-                        thal_results o = this->calc_dimer(seq_a, seq_b, local_ta);
-                        auto &p = this->dimer_cache[row_offset + b];
-                        p.dh = (ThalReal)o.dh;
-                        p.ds = (ThalReal)o.ds;
+
+                        // 3' end-anchored alignment (asymmetric, full square).
+                        thal_results o3p;
+                        thal((unsigned char*)seq_a, (unsigned char*)seq_b,
+                             &ta_3p, THL_FAST, &o3p);
+                        auto &p3 = this->dimer_3p_cache[row_off_3p + b];
+                        p3.dh = (ThalReal)o3p.dh;
+                        p3.ds = (ThalReal)o3p.ds;
+
+                        // Total alignment (symmetric, canonical only).
+                        if (b >= a) {
+                            thal_results oa;
+                            thal((unsigned char*)seq_a, (unsigned char*)seq_b,
+                                 &ta_any, THL_FAST, &oa);
+                            auto &pa = this->dimer_cache[row_off_any + b];
+                            pa.dh = (ThalReal)oa.dh;
+                            pa.ds = (ThalReal)oa.ds;
+                        }
                     }
                 }
             });
@@ -222,10 +267,16 @@ namespace primersim{
         int bind_addr = i;
         if (end3 != 0) bind_addr = addr;
 
+        // Extension only happens when the primer's 3' end is
+        // anchored — use the 3'-end-mode (productive) K only. The
+        // remaining total - 3p interaction stays as bound nonspec and
+        // is accounted for via the K_nonamp path in
+        // calc_strand_bindings.
+
         //R strand bindings
         eq.c0[X] = eq.address_k_conc_vec[i].rstrand[end5][end3];
-        eq.k[K_FX] = eq.address_k_conc_vec[bind_addr].dhds_K_primer_f_addr_frc;
-        eq.k[K_RX] = eq.address_k_conc_vec[bind_addr].dhds_K_primer_r_addr_frc;
+        eq.k[K_FX] = eq.address_k_conc_vec[bind_addr].dhds_K_primer_f_addr_frc_3p;
+        eq.k[K_RX] = eq.address_k_conc_vec[bind_addr].dhds_K_primer_r_addr_frc_3p;
         eq.calc_cx();
         eq.calc_bound_concs();
         //Remove bound primer from primer concentration
@@ -237,8 +288,8 @@ namespace primersim{
 
         //F Strand Bindings
         eq.c0[X] = eq.address_k_conc_vec[i].fstrand[end5][end3];
-        eq.k[K_FX] = eq.address_k_conc_vec[bind_addr].dhds_K_primer_f_addr_rrc;
-        eq.k[K_RX] = eq.address_k_conc_vec[bind_addr].dhds_K_primer_r_addr_rrc;
+        eq.k[K_FX] = eq.address_k_conc_vec[bind_addr].dhds_K_primer_f_addr_rrc_3p;
+        eq.k[K_RX] = eq.address_k_conc_vec[bind_addr].dhds_K_primer_r_addr_rrc_3p;
         eq.calc_cx();
         eq.calc_bound_concs();
         //Remove bound primer from primer concentration
@@ -281,8 +332,12 @@ namespace primersim{
             default: break;
         }
 
-        // K values come from the per-cycle cache populated in sim_pcr.
-        const auto &K_i = eq.address_k_conc_vec[i].tmp_dhds_K;
+        // K caches: K_total for 5'-end bindings (always non-amplifying),
+        // K_nonamp = K_total − K_3p for 3'-end bindings (the residual
+        // non-productive portion; the productive K_3p portion drives
+        // extension separately via update_strand_concs).
+        const auto &K_i        = eq.address_k_conc_vec[i].tmp_dhds_K;
+        const auto &K_i_nonamp = eq.address_k_conc_vec[i].tmp_dhds_K_nonamp;
 
         // Reverse strand bindings
         // 5' R -> R Strand -> FRC 3'
@@ -290,10 +345,10 @@ namespace primersim{
         sum_f_weighted += eq.address_k_conc_vec[bind_addr5].rstrand[end5][end3] * K_i[0][binding_end5];
         sum_r_weighted += eq.address_k_conc_vec[bind_addr5].rstrand[end5][end3] * K_i[1][binding_end5];
 
-        // 3' Binding
+        // 3' Binding (non-amp portion only — amp drives extension)
         nonspec_total += eq.address_k_conc_vec[i].rstrand[end5][end3];
-        sum_f_weighted += eq.address_k_conc_vec[bind_addr3].rstrand[end5][end3] * K_i[0][binding_end3];
-        sum_r_weighted += eq.address_k_conc_vec[bind_addr3].rstrand[end5][end3] * K_i[1][binding_end3];
+        sum_f_weighted += eq.address_k_conc_vec[bind_addr3].rstrand[end5][end3] * K_i_nonamp[0][binding_end3];
+        sum_r_weighted += eq.address_k_conc_vec[bind_addr3].rstrand[end5][end3] * K_i_nonamp[1][binding_end3];
 
 
         if (end5 == 0) binding_end5 = 0; //Address F
@@ -303,10 +358,10 @@ namespace primersim{
         sum_f_weighted += eq.address_k_conc_vec[bind_addr5].fstrand[end5][end3] * K_i[0][binding_end5];
         sum_r_weighted += eq.address_k_conc_vec[bind_addr5].fstrand[end5][end3] * K_i[1][binding_end5];
 
-        // 3' Binding
+        // 3' Binding (non-amp portion only — amp drives extension)
         nonspec_total += eq.address_k_conc_vec[i].fstrand[end5][end3];
-        sum_f_weighted += eq.address_k_conc_vec[bind_addr3].fstrand[end5][end3] * K_i[0][binding_end3];
-        sum_r_weighted += eq.address_k_conc_vec[bind_addr3].fstrand[end5][end3] * K_i[1][binding_end3];
+        sum_f_weighted += eq.address_k_conc_vec[bind_addr3].fstrand[end5][end3] * K_i_nonamp[0][binding_end3];
+        sum_r_weighted += eq.address_k_conc_vec[bind_addr3].fstrand[end5][end3] * K_i_nonamp[1][binding_end3];
     }
 
     double Primeanneal::sim_pcr(const std::vector<pairing> &pairings_in, const char *out_filename, unsigned int addr, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc, bool log_cycles){
@@ -335,29 +390,56 @@ namespace primersim{
                 }
             }
 
-            // Read pre-computed dh/ds values from dimer_cache. The cache is
-            // keyed by primer (not pairing), so we map (pair_idx,
-            // address_kind ∈ {0=f, 1=f_rc, 2=r, 3=r_rc}) to (primer_idx,
-            // primer_kind ∈ {0=seq, 1=rc}) using the current pairings.
-            // Cache is symmetric / triangular over M = 2*P sequence slots
-            // — swap to a <= b before indexing.
+            // Read pre-computed dh/ds values from the two caches. The
+            // caches are keyed by primer (not pairing), so we map
+            // (pair_idx, address_kind ∈ {0=f, 1=f_rc, 2=r, 3=r_rc}) to
+            // (primer_idx, primer_kind ∈ {0=seq, 1=rc}) using the
+            // current pairings. The (ka & 1) ^ rc_flag XOR handles the
+            // case where a slot already holds the RC of its canonical
+            // primer (pa.f_rc / pa.r_rc = true).
+            //
+            // dimer_cache is symmetric/triangular → swap to a <= b
+            // before indexing.
+            // dimer_3p_cache is asymmetric (thal_end1 anchors seq1's
+            // 3' end). The simulator's convention is "primer in seq1
+            // / a_pair=addr, strand in seq2 / b_pair=i", so we never
+            // swap here.
             const size_t M_total = 2 * primer_pool.size();
-            auto cached = [this, &pairings_in, M_total](size_t a_pair, int ka, size_t b_pair, int kb) -> const dh_ds_cache_entry& {
-                const auto &pa = pairings_in[a_pair];
-                const auto &pb = pairings_in[b_pair];
-                int pi_a = (ka & 2) ? pa.r_idx : pa.f_idx;
-                int pi_b = (kb & 2) ? pb.r_idx : pb.f_idx;
-                size_t a = (size_t)pi_a * 2 + (ka & 1);
-                size_t b = (size_t)pi_b * 2 + (kb & 1);
+            auto resolve = [&pairings_in](size_t pair_idx, int k, int *pi_out, int *kind_out) {
+                const auto &pp = pairings_in[pair_idx];
+                bool is_r = (k & 2) != 0;
+                *pi_out   = is_r ? pp.r_idx : pp.f_idx;
+                *kind_out = (k & 1) ^ (int)(is_r ? pp.r_rc : pp.f_rc);
+            };
+            auto cached = [this, &resolve, M_total](size_t a_pair, int ka, size_t b_pair, int kb) -> const dh_ds_cache_entry& {
+                int pi_a, pi_b, ka_kind, kb_kind;
+                resolve(a_pair, ka, &pi_a, &ka_kind);
+                resolve(b_pair, kb, &pi_b, &kb_kind);
+                size_t a = (size_t)pi_a * 2 + ka_kind;
+                size_t b = (size_t)pi_b * 2 + kb_kind;
                 if (a > b) std::swap(a, b);
                 return this->dimer_cache[a * (2*M_total - a - 1) / 2 + b];
             };
+            auto cached_3p = [this, &resolve, M_total](size_t a_pair, int ka, size_t b_pair, int kb) -> const dh_ds_cache_entry& {
+                int pi_a, pi_b, ka_kind, kb_kind;
+                resolve(a_pair, ka, &pi_a, &ka_kind);
+                resolve(b_pair, kb, &pi_b, &kb_kind);
+                size_t a = (size_t)pi_a * 2 + ka_kind;
+                size_t b = (size_t)pi_b * 2 + kb_kind;
+                return this->dimer_3p_cache[a * M_total + b];
+            };
 
+            // Populate both total (any) and 3'-end-anchored (end1)
+            // dh/ds values for every (primer_kind, addr_region) pair
+            // touched by this address.
             for (int ii = 0; ii < 2; ii++){
                 for (int jj = 0; jj < 4; jj++){
-                    const auto &p = cached(addr, ii, i, jj);
-                    eq.address_k_conc_vec[i].tmp_dhds[ii][jj][dh] = p.dh;
-                    eq.address_k_conc_vec[i].tmp_dhds[ii][jj][ds] = p.ds;
+                    const auto &p   = cached   (addr, ii, i, jj);
+                    const auto &p3p = cached_3p(addr, ii, i, jj);
+                    eq.address_k_conc_vec[i].tmp_dhds   [ii][jj][dh] = p.dh;
+                    eq.address_k_conc_vec[i].tmp_dhds   [ii][jj][ds] = p.ds;
+                    eq.address_k_conc_vec[i].tmp_dhds_3p[ii][jj][dh] = p3p.dh;
+                    eq.address_k_conc_vec[i].tmp_dhds_3p[ii][jj][ds] = p3p.ds;
                 }
             }
 
@@ -370,15 +452,32 @@ namespace primersim{
             { const auto &p = cached(addr, 2, i, 1); eq.address_k_conc_vec[i].dhds_primer_r_addr_frc[dh] = p.dh; eq.address_k_conc_vec[i].dhds_primer_r_addr_frc[ds] = p.ds; }
             { const auto &p = cached(addr, 2, i, 2); eq.address_k_conc_vec[i].dhds_primer_r_addr_r[dh]   = p.dh; eq.address_k_conc_vec[i].dhds_primer_r_addr_r[ds]   = p.ds; }
             { const auto &p = cached(addr, 2, i, 3); eq.address_k_conc_vec[i].dhds_primer_r_addr_rrc[dh] = p.dh; eq.address_k_conc_vec[i].dhds_primer_r_addr_rrc[ds] = p.ds; }
+
+            // 3p variants of the four productive (frc, rrc) specific
+            // bindings — only the 3'-end-anchored portion drives
+            // extension in update_strand_concs.
+            { const auto &p = cached_3p(addr, 0, i, 1); eq.address_k_conc_vec[i].dhds_primer_f_addr_frc_3p[dh] = p.dh; eq.address_k_conc_vec[i].dhds_primer_f_addr_frc_3p[ds] = p.ds; }
+            { const auto &p = cached_3p(addr, 0, i, 3); eq.address_k_conc_vec[i].dhds_primer_f_addr_rrc_3p[dh] = p.dh; eq.address_k_conc_vec[i].dhds_primer_f_addr_rrc_3p[ds] = p.ds; }
+            { const auto &p = cached_3p(addr, 2, i, 1); eq.address_k_conc_vec[i].dhds_primer_r_addr_frc_3p[dh] = p.dh; eq.address_k_conc_vec[i].dhds_primer_r_addr_frc_3p[ds] = p.ds; }
+            { const auto &p = cached_3p(addr, 2, i, 3); eq.address_k_conc_vec[i].dhds_primer_r_addr_rrc_3p[dh] = p.dh; eq.address_k_conc_vec[i].dhds_primer_r_addr_rrc_3p[ds] = p.ds; }
         }
 
+        // Hairpin energy is intramolecular and depends on the actual
+        // sequence used — seq vs rc fold differently. Pick the right
+        // one based on the pair's *_rc flags.
         ThalReal dhds_f_hairpin[2];
-        o = calc_hairpin(primer_pool[pairings_in[addr].f_idx].seq, ta);
+        char *f_primer = pairings_in[addr].f_rc
+            ? primer_pool[pairings_in[addr].f_idx].rc
+            : primer_pool[pairings_in[addr].f_idx].seq;
+        o = calc_hairpin(f_primer, ta);
         dhds_f_hairpin[dh] = o.dh;
         dhds_f_hairpin[ds] = o.ds;
 
         ThalReal dhds_r_hairpin[2];
-        o = calc_hairpin(primer_pool[pairings_in[addr].r_idx].seq, ta);
+        char *r_primer = pairings_in[addr].r_rc
+            ? primer_pool[pairings_in[addr].r_idx].rc
+            : primer_pool[pairings_in[addr].r_idx].seq;
+        o = calc_hairpin(r_primer, ta);
         dhds_r_hairpin[dh] = o.dh;
         dhds_r_hairpin[ds] = o.ds;
 
@@ -428,15 +527,39 @@ namespace primersim{
             // Populate per-address K caches for this cycle. Each value
             // would otherwise be recomputed 25 times by calc_strand_bindings
             // and update_strand_concs.
+            //
+            // Three K flavors per (primer, addr_region):
+            //   tmp_dhds_K        — total (any-mode) interaction
+            //   tmp_dhds_K_3p     — 3'-end-anchored / amplifying
+            //   tmp_dhds_K_nonamp — total minus 3p in (dh, ds) space.
+            //                       When total == 3p (the most stable
+            //                       alignment IS the 3'-end-anchored
+            //                       one), set K_nonamp = 0 — don't
+            //                       model a phantom 0-ΔG (K = 1)
+            //                       binding for the residue.
+            const double tc = temp_c_profile[cycle-1];
             for(unsigned int i = 0; i < N; i++){
                 auto &kc = eq.address_k_conc_vec[i];
-                for (int p = 0; p < 2; p++)
-                    for (int e = 0; e < 4; e++)
-                        kc.tmp_dhds_K[p][e] = dhds_to_eq_const(kc.tmp_dhds[p][e], temp_c_profile[cycle-1]);
-                kc.dhds_K_primer_f_addr_frc = dhds_to_eq_const(kc.dhds_primer_f_addr_frc, temp_c_profile[cycle-1]);
-                kc.dhds_K_primer_r_addr_frc = dhds_to_eq_const(kc.dhds_primer_r_addr_frc, temp_c_profile[cycle-1]);
-                kc.dhds_K_primer_f_addr_rrc = dhds_to_eq_const(kc.dhds_primer_f_addr_rrc, temp_c_profile[cycle-1]);
-                kc.dhds_K_primer_r_addr_rrc = dhds_to_eq_const(kc.dhds_primer_r_addr_rrc, temp_c_profile[cycle-1]);
+                for (int p = 0; p < 2; p++) {
+                    for (int e = 0; e < 4; e++) {
+                        kc.tmp_dhds_K   [p][e] = dhds_to_eq_const(kc.tmp_dhds   [p][e], tc);
+                        kc.tmp_dhds_K_3p[p][e] = dhds_to_eq_const(kc.tmp_dhds_3p[p][e], tc);
+                        if (kc.tmp_dhds[p][e][dh] == kc.tmp_dhds_3p[p][e][dh] &&
+                            kc.tmp_dhds[p][e][ds] == kc.tmp_dhds_3p[p][e][ds]) {
+                            kc.tmp_dhds_K_nonamp[p][e] = 0.0;
+                        } else {
+                            ThalReal nonamp[2] = {
+                                (ThalReal)(kc.tmp_dhds[p][e][dh] - kc.tmp_dhds_3p[p][e][dh]),
+                                (ThalReal)(kc.tmp_dhds[p][e][ds] - kc.tmp_dhds_3p[p][e][ds]),
+                            };
+                            kc.tmp_dhds_K_nonamp[p][e] = dhds_to_eq_const(nonamp, tc);
+                        }
+                    }
+                }
+                kc.dhds_K_primer_f_addr_frc_3p = dhds_to_eq_const(kc.dhds_primer_f_addr_frc_3p, tc);
+                kc.dhds_K_primer_r_addr_frc_3p = dhds_to_eq_const(kc.dhds_primer_r_addr_frc_3p, tc);
+                kc.dhds_K_primer_f_addr_rrc_3p = dhds_to_eq_const(kc.dhds_primer_f_addr_rrc_3p, tc);
+                kc.dhds_K_primer_r_addr_rrc_3p = dhds_to_eq_const(kc.dhds_primer_r_addr_rrc_3p, tc);
             }
 
             // Per-cycle accumulators populated by calc_strand_bindings:
@@ -617,18 +740,23 @@ namespace primersim{
     // Random partition of all `pool_size` primers into pool_size/2
     // (f_idx, r_idx) pairs. Every primer is used exactly once, and
     // any primer is eligible for either slot — the canonical F/R
-    // role split from pairings.csv is NOT preserved. Used by
-    // sweep_pairings to draw fresh trial assignments.
+    // role split from pairings.csv is NOT preserved. Each primer
+    // independently has a 50% chance of being used as its reverse
+    // complement (f_rc / r_rc set true). Used by sweep_pairings to
+    // draw fresh trial assignments.
     static std::vector<pairing> random_pairings(
             size_t pool_size, std::mt19937 &rng){
         std::vector<int> perm(pool_size);
         std::iota(perm.begin(), perm.end(), 0);
         std::shuffle(perm.begin(), perm.end(), rng);
+        std::bernoulli_distribution coin(0.5);
         const size_t n_pairs = pool_size / 2;
         std::vector<pairing> result(n_pairs);
         for (size_t i = 0; i < n_pairs; i++) {
             result[i].f_idx = perm[2 * i];
             result[i].r_idx = perm[2 * i + 1];
+            result[i].f_rc  = coin(rng);
+            result[i].r_rc  = coin(rng);
         }
         return result;
     }
@@ -688,8 +816,13 @@ namespace primersim{
                 for (int t : temperatures_c) fprintf(f, ",%dC", t);
                 fprintf(f, "\n");
                 for (size_t i = 0; i < N; i++) {
-                    const char *fseq = this->primer_pool[local_pairings[i].f_idx].seq;
-                    const char *rseq = this->primer_pool[local_pairings[i].r_idx].seq;
+                    const auto &pr = local_pairings[i];
+                    const char *fseq = pr.f_rc
+                        ? this->primer_pool[pr.f_idx].rc
+                        : this->primer_pool[pr.f_idx].seq;
+                    const char *rseq = pr.r_rc
+                        ? this->primer_pool[pr.r_idx].rc
+                        : this->primer_pool[pr.r_idx].seq;
                     fprintf(f, "%s,%s", fseq, rseq);
                     for (size_t ti = 0; ti < T; ti++)
                         fprintf(f, ",%e", ratios[i][ti]);
