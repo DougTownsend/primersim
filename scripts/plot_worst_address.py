@@ -3,11 +3,14 @@
 random F/R pairing trials, per temperature, plus one extra box for
 "best temperature per address" optimization.
 
-Memory-bounded: uses a reusable numpy buffer (~100 KB) and a manual
-float parser; pandas was retaining ~600 KB per file even with
-usecols, climbing to 20+ GB on 36k files. Also calls
-posix_fadvise(POSIX_FADV_DONTNEED) so the kernel page cache doesn't
-balloon while reading 6+ GB of CSVs.
+Reads the rolling sweep.*.csv files produced by sweep_pairings.
+Each row is "trial_id,f_seq,r_seq,<T1>C,<T2>C,...". Rows of the
+same trial are contiguous within a file (the writer mutex
+guarantees it), so a streaming group-by-trial_id pass extracts
+each trial's per-pair ratios with bounded memory.
+
+Memory-bounded: posix_fadvise(POSIX_FADV_DONTNEED) drops each file
+from page cache after read; per-trial work uses a reusable buffer.
 
 Usage: scripts/plot_worst_address.py [sweep_dir] [out_png]
 Defaults: sweep_results/, worst_address.png
@@ -24,47 +27,61 @@ import numpy as np
 sweep_dir = Path(sys.argv[1] if len(sys.argv) > 1 else "sweep_results")
 out_png   = Path(sys.argv[2] if len(sys.argv) > 2 else "worst_address.png")
 
-trial_re = re.compile(r"^trial_\d+\.csv$")
-trial_files = sorted(p for p in sweep_dir.glob("sweep_job_[0-9][0-9]/trial_*.csv")
-                     if trial_re.match(p.name))
-if not trial_files:
-    sys.exit(f"no trial CSVs under {sweep_dir}")
+# Pick up sweep.NNNN.csv either directly under sweep_dir or one level
+# down (sweep_job_*/sweep.NNNN.csv) — works for the LSF array layout.
+sweep_files = sorted(sweep_dir.glob("sweep.*.csv")) + \
+              sorted(sweep_dir.glob("sweep_job_*/sweep.*.csv"))
+if not sweep_files:
+    sys.exit(f"no sweep.*.csv under {sweep_dir}")
 
-with open(trial_files[0]) as fp:
+with open(sweep_files[0]) as fp:
     header = next(csv.reader(fp))
 temp_idxs = [i for i, c in enumerate(header) if re.fullmatch(r"\d+C", c)]
-temps = [int(header[i][:-1]) for i in temp_idxs]
-n_temps = len(temps)
-n_trials = len(trial_files)
+temps     = [int(header[i][:-1]) for i in temp_idxs]
+n_temps   = len(temps)
 
-# Reusable buffer: one (max-rows × n_temps) ndarray, overwritten per file.
-# 1500 row capacity is comfortable for the 979-address dataset.
-buf = np.empty((1500, n_temps), dtype=np.float64)
+per_temp_worst  = [[] for _ in range(n_temps)]   # [temp_i][trial]
+optimized_worst = []                              # [trial]
 
-per_temp_worst = np.zeros((n_trials, n_temps))
-optimized_worst = np.zeros(n_trials)
+# Reusable parse buffer — overwritten per trial.
+buf = np.empty((4096, n_temps), dtype=np.float64)
+n_rows = 0
+current_trial = None
 
-for ti, path in enumerate(trial_files):
+def flush():
+    global n_rows
+    if n_rows == 0:
+        return
+    arr = buf[:n_rows]
+    col_min = arr.min(axis=0)
+    for t, v in enumerate(col_min):
+        per_temp_worst[t].append(v)
+    optimized_worst.append(arr.max(axis=1).min())
+    n_rows = 0
+
+for path in sweep_files:
     with open(path, "rb") as fp:
         text = fp.read()
         os.posix_fadvise(fp.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
     lines = text.split(b"\n")
-    n_rows = 0
-    for line in lines[1:]:                 # skip header
+    for line in lines[1:]:
         if not line:
             continue
         parts = line.split(b",")
+        tid = int(parts[0])
+        if tid != current_trial:
+            flush()
+            current_trial = tid
         for j, idx in enumerate(temp_idxs):
             buf[n_rows, j] = float(parts[idx])
         n_rows += 1
-    arr = buf[:n_rows]
-    per_temp_worst[ti] = arr.min(axis=0)
-    optimized_worst[ti] = arr.max(axis=1).min()
-    del text, lines
+flush()
+
+n_trials = len(optimized_worst)
 
 fig, ax = plt.subplots(figsize=(11, 6))
-data   = [per_temp_worst[:, c] for c in range(n_temps)] + [optimized_worst]
-labels = [f"{t}°C" for t in temps]                      + ["best T\nper addr"]
+data   = per_temp_worst + [optimized_worst]
+labels = [f"{t}°C" for t in temps] + ["best T\nper addr"]
 ax.boxplot(data, labels=labels, whis=(0, 100), widths=0.6)
 ax.set_yscale("log")
 ax.set_ylabel("Worst-address amplification ratio")

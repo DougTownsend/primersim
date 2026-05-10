@@ -340,23 +340,31 @@ namespace primersim{
             void eval_addresses(const char *out_filename, const char *hist_filename, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc);
             // Multithreaded sweep over n_trials random pairing
             // assignments. Each trial draws a fresh full-pool random
-            // pairing (no F/R role constraint), then runs sim_pcr per
-            // pair × per temperature (constant temp for all pcr_cycles).
-            // One CSV per trial in out_dir:
-            //   trial_NNNN.csv  with columns: f_seq, r_seq, <T1>C, <T2>C, ...
-            // Each row is one pair's amplification ratio at every
-            // temperature. Per-trial granularity (one worker fully
-            // owns a trial), so SIGTERM mid-trial leaves no orphan —
-            // the trial just doesn't produce a file.
+            // pairing (no F/R role constraint, with random RC of each
+            // primer), then runs sim_pcr per pair × per temperature
+            // (constant temp for all pcr_cycles).
             //
-            // n_trials == 0 means loop indefinitely (useful with
-            // LSF -W where wall-time is the only termination signal);
-            // otherwise stop after n_trials trials.
+            // Output is a sequence of rolling CSV files in out_dir:
+            //   sweep.NNNN.csv  (NNNN starts at 0000, rolled at ~500 MB)
+            // Each row is one (trial, pair) result with columns:
+            //   trial_id, f_seq, r_seq, <T1>C, <T2>C, ...
+            // A single mutex serializes the writes so all 50 rows of a
+            // trial land contiguously in one file (never split across
+            // file boundaries). Concurrent trials may still be
+            // interleaved by trial_id within one file — group by
+            // trial_id during analysis.
+            //
+            // Termination:
+            //   • n_trials > 0: stop after that many trials.
+            //   • n_trials = 0: loop indefinitely until external
+            //     SIGTERM (e.g. LSF -W cap).
+            //   • max_data_gb > 0: also stop once total bytes written
+            //     exceeds the budget. 0 = unlimited size.
             //
             // Each worker draws its own seed from std::random_device
-            // (i.e. /dev/urandom on Linux), so back-to-back processes
-            // and concurrent workers always get independent sequences.
-            void sweep_pairings(const char *out_dir, int n_trials, const std::vector<int> &temperatures_c, unsigned int pcr_cycles, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc);
+            // (/dev/urandom on Linux), so back-to-back processes and
+            // concurrent workers always get independent sequences.
+            void sweep_pairings(const char *out_dir, int n_trials, double max_data_gb, const std::vector<int> &temperatures_c, unsigned int pcr_cycles, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc);
             void shuffle_addresses(void);
     };
 }

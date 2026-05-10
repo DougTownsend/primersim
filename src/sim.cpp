@@ -8,6 +8,9 @@
 #include <random>
 #include <numeric>
 #include <algorithm>
+#include <fstream>
+#include <mutex>
+#include <string>
 #include <sys/stat.h>
 
 #include "thal.h"
@@ -537,16 +540,32 @@ namespace primersim{
             //                       one), set K_nonamp = 0 — don't
             //                       model a phantom 0-ΔG (K = 1)
             //                       binding for the residue.
+            // Helper: K from (dh, ds) — but force 0 if inputs are not
+            // finite (thal can return ±∞ or NaN as sentinels for "no
+            // alignment found", and inf-inf = NaN in the subtraction
+            // below would otherwise poison every downstream formula).
+            auto safe_K = [this](ThalReal v[2], double tc_) -> Real {
+                if (!std::isfinite((double)v[0]) || !std::isfinite((double)v[1])) return 0.0;
+                return (Real)this->dhds_to_eq_const(v, tc_);
+            };
             const double tc = temp_c_profile[cycle-1];
             for(unsigned int i = 0; i < N; i++){
                 auto &kc = eq.address_k_conc_vec[i];
                 for (int p = 0; p < 2; p++) {
                     for (int e = 0; e < 4; e++) {
-                        kc.tmp_dhds_K   [p][e] = dhds_to_eq_const(kc.tmp_dhds   [p][e], tc);
-                        kc.tmp_dhds_K_3p[p][e] = dhds_to_eq_const(kc.tmp_dhds_3p[p][e], tc);
-                        if (kc.tmp_dhds[p][e][dh] == kc.tmp_dhds_3p[p][e][dh] &&
-                            kc.tmp_dhds[p][e][ds] == kc.tmp_dhds_3p[p][e][ds]) {
-                            kc.tmp_dhds_K_nonamp[p][e] = 0.0;
+                        kc.tmp_dhds_K   [p][e] = safe_K(kc.tmp_dhds   [p][e], tc);
+                        kc.tmp_dhds_K_3p[p][e] = safe_K(kc.tmp_dhds_3p[p][e], tc);
+                        bool finite_total = std::isfinite((double)kc.tmp_dhds[p][e][dh])
+                                         && std::isfinite((double)kc.tmp_dhds[p][e][ds]);
+                        bool finite_3p    = std::isfinite((double)kc.tmp_dhds_3p[p][e][dh])
+                                         && std::isfinite((double)kc.tmp_dhds_3p[p][e][ds]);
+                        if (!finite_total) {
+                            kc.tmp_dhds_K_nonamp[p][e] = 0.0;       // no binding at all
+                        } else if (!finite_3p) {
+                            kc.tmp_dhds_K_nonamp[p][e] = kc.tmp_dhds_K[p][e];  // total binding all non-amp
+                        } else if (kc.tmp_dhds[p][e][dh] == kc.tmp_dhds_3p[p][e][dh] &&
+                                   kc.tmp_dhds[p][e][ds] == kc.tmp_dhds_3p[p][e][ds]) {
+                            kc.tmp_dhds_K_nonamp[p][e] = 0.0;       // total IS the 3p alignment
                         } else {
                             ThalReal nonamp[2] = {
                                 (ThalReal)(kc.tmp_dhds[p][e][dh] - kc.tmp_dhds_3p[p][e][dh]),
@@ -556,10 +575,10 @@ namespace primersim{
                         }
                     }
                 }
-                kc.dhds_K_primer_f_addr_frc_3p = dhds_to_eq_const(kc.dhds_primer_f_addr_frc_3p, tc);
-                kc.dhds_K_primer_r_addr_frc_3p = dhds_to_eq_const(kc.dhds_primer_r_addr_frc_3p, tc);
-                kc.dhds_K_primer_f_addr_rrc_3p = dhds_to_eq_const(kc.dhds_primer_f_addr_rrc_3p, tc);
-                kc.dhds_K_primer_r_addr_rrc_3p = dhds_to_eq_const(kc.dhds_primer_r_addr_rrc_3p, tc);
+                kc.dhds_K_primer_f_addr_frc_3p = safe_K(kc.dhds_primer_f_addr_frc_3p, tc);
+                kc.dhds_K_primer_r_addr_frc_3p = safe_K(kc.dhds_primer_r_addr_frc_3p, tc);
+                kc.dhds_K_primer_f_addr_rrc_3p = safe_K(kc.dhds_primer_f_addr_rrc_3p, tc);
+                kc.dhds_K_primer_r_addr_rrc_3p = safe_K(kc.dhds_primer_r_addr_rrc_3p, tc);
             }
 
             // Per-cycle accumulators populated by calc_strand_bindings:
@@ -761,33 +780,89 @@ namespace primersim{
         return result;
     }
 
+    // Append-only writer for sweep results. All workers share one
+    // writer; a mutex serializes write_trial so each trial's rows land
+    // contiguously in a single file. Files roll over once the current
+    // one passes max_per_file bytes, naming sweep.0000.csv,
+    // sweep.0001.csv, ... in out_dir. total_bytes is atomic so workers
+    // can poll over_limit() without taking the lock.
+    class TrialWriter {
+    public:
+        TrialWriter(const char *out_dir_in, size_t max_per_file_bytes,
+                    size_t max_total_bytes, std::string header_in)
+            : out_dir(out_dir_in), max_per_file(max_per_file_bytes),
+              max_total(max_total_bytes), header(std::move(header_in)) {
+            rotate_locked();
+        }
+        ~TrialWriter(){ if (out.is_open()) out.close(); }
+        // Write one trial's content (already newline-terminated rows)
+        // atomically. Rolls to a new file before writing if this trial
+        // would push the current file past max_per_file.
+        void write_trial(const std::string &content) {
+            std::lock_guard<std::mutex> lk(mu);
+            if (cur_bytes + content.size() > max_per_file) rotate_locked();
+            out.write(content.data(), (std::streamsize)content.size());
+            cur_bytes   += content.size();
+            total_bytes.fetch_add(content.size(), std::memory_order_relaxed);
+        }
+        bool over_limit() const {
+            return max_total > 0 &&
+                   total_bytes.load(std::memory_order_relaxed) >= max_total;
+        }
+    private:
+        void rotate_locked() {
+            if (out.is_open()) out.close();
+            char fn[512];
+            snprintf(fn, sizeof(fn), "%s/sweep.%04d.csv", out_dir.c_str(), part_num++);
+            out.open(fn);
+            out << header;
+            cur_bytes = header.size();
+        }
+        std::mutex mu;
+        std::ofstream out;
+        std::string out_dir;
+        int part_num = 0;
+        size_t cur_bytes = 0;
+        size_t max_per_file;
+        std::atomic<size_t> total_bytes{0};
+        size_t max_total;
+        std::string header;
+    };
+
     void Primeanneal::sweep_pairings(
             const char *out_dir,
             int n_trials,
+            double max_data_gb,
             const std::vector<int> &temperatures_c,
             unsigned int pcr_cycles,
             double dna_conc, double primer_f_conc, double primer_r_conc,
             double mv_conc, double dv_conc, double dntp_conc){
-        // Best-effort mkdir; ignore EEXIST. Caller can also pre-create.
-        mkdir(out_dir, 0755);
+        mkdir(out_dir, 0755);  // best-effort
 
-        // n_trials == 0 means "loop forever, assume external kill" —
-        // useful with LSF -W where the wall-time limit is the only
-        // termination signal. Otherwise stop after n_trials trials.
-        // Per-trial work unit: one worker fully owns a trial and writes
-        // its CSV at the end. Output is one row per pair with columns:
-        //   f_seq, r_seq, <temp1>C, <temp2>C, ...
-        // SIGTERM mid-trial leaves no orphan — the trial just doesn't
-        // produce a file.
+        // Build the CSV header once: trial_id, f_seq, r_seq, <T>C cols.
+        std::string header = "trial_id,f_seq,r_seq";
+        for (int t : temperatures_c) {
+            header += ",";
+            header += std::to_string(t);
+            header += "C";
+        }
+        header += "\n";
+
+        constexpr size_t per_file_cap = 500ULL * 1024 * 1024;  // 500 MB
+        const size_t max_total_bytes = (max_data_gb > 0)
+            ? (size_t)(max_data_gb * 1024.0 * 1024.0 * 1024.0)
+            : 0;
+        TrialWriter writer(out_dir, per_file_cap, max_total_bytes, header);
+
+        // Worker stops on (a) n_trials cap, (b) data-size cap, or
+        // (c) external SIGTERM. Each worker has an independent
+        // /dev/urandom-seeded mt19937; pairings are built on demand.
         std::atomic<int> next_trial{0};
         auto worker = [&]() {
-            // Each worker has its own random_device-seeded RNG, drawn
-            // independently from /dev/urandom. No master seed / no
-            // pre-generated state — each pairing is built only when a
-            // worker picks up the trial.
             std::random_device rd;
             std::mt19937 worker_rng(rd());
             while (true) {
+                if (writer.over_limit()) break;
                 int trial = next_trial.fetch_add(1);
                 if (n_trials > 0 && trial >= n_trials) break;
                 std::vector<pairing> local_pairings =
@@ -795,7 +870,6 @@ namespace primersim{
                 const size_t N = local_pairings.size();
                 const size_t T = temperatures_c.size();
 
-                // ratios[pair][temp_idx]
                 std::vector<std::vector<double>> ratios(N, std::vector<double>(T, 0.0));
                 for (size_t i = 0; i < N; i++) {
                     for (size_t ti = 0; ti < T; ti++) {
@@ -809,12 +883,12 @@ namespace primersim{
                     }
                 }
 
-                char fname[512];
-                snprintf(fname, sizeof(fname), "%s/trial_%04d.csv", out_dir, trial);
-                FILE *f = fopen(fname, "w");
-                fprintf(f, "f_seq,r_seq");
-                for (int t : temperatures_c) fprintf(f, ",%dC", t);
-                fprintf(f, "\n");
+                // Build the trial's full text in a local string, then
+                // hand it to the writer in one atomic write — keeps
+                // all 50 rows of a trial contiguous in the file.
+                std::string content;
+                content.reserve(N * 220);
+                char numbuf[40];
                 for (size_t i = 0; i < N; i++) {
                     const auto &pr = local_pairings[i];
                     const char *fseq = pr.f_rc
@@ -823,12 +897,18 @@ namespace primersim{
                     const char *rseq = pr.r_rc
                         ? this->primer_pool[pr.r_idx].rc
                         : this->primer_pool[pr.r_idx].seq;
-                    fprintf(f, "%s,%s", fseq, rseq);
-                    for (size_t ti = 0; ti < T; ti++)
-                        fprintf(f, ",%e", ratios[i][ti]);
-                    fprintf(f, "\n");
+                    snprintf(numbuf, sizeof(numbuf), "%d,", trial);
+                    content += numbuf;
+                    content += fseq;
+                    content += ',';
+                    content += rseq;
+                    for (size_t ti = 0; ti < T; ti++) {
+                        snprintf(numbuf, sizeof(numbuf), ",%e", ratios[i][ti]);
+                        content += numbuf;
+                    }
+                    content += '\n';
                 }
-                fclose(f);
+                writer.write_trial(content);
             }
         };
 

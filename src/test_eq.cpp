@@ -38,14 +38,21 @@ int main(int argc, char **argv){
     pa.populate_dimer_cache(mv, dv, dntp, /*temp_c=*/55.0);
 
     if (argc > 2 && std::string(argv[2]) == "sweep") {
+        // CLI: ./test_eq <num_cpu> sweep <n_trials> [out_dir] [max_data_gb]
         // n_trials = 0 means loop until externally killed (e.g. LSF -W).
+        // max_data_gb = 0 (default) means unlimited; otherwise the
+        // sweep stops once the rolling output files exceed the budget.
         int n_trials = (argc > 3) ? std::atoi(argv[3]) : 10;
         const char *out_dir = (argc > 4) ? argv[4] : "sweep_out";
+        double max_gb = (argc > 5) ? std::atof(argv[5]) : 0.0;
         std::vector<int> temps_c;
         for (int t = 50; t <= 60; t++) temps_c.push_back(t);
-        std::cout << "sweep: " << (n_trials == 0 ? "infinite" : std::to_string(n_trials))
-                  << " trials × " << temps_c.size() << " temps -> " << out_dir << "\n";
-        pa.sweep_pairings(out_dir, n_trials, temps_c, /*pcr_cycles=*/30,
+        std::cout << "sweep: "
+                  << (n_trials == 0 ? "infinite" : std::to_string(n_trials))
+                  << " trials × " << temps_c.size() << " temps -> " << out_dir
+                  << " (max " << (max_gb > 0 ? std::to_string(max_gb) + " GB" : "unlimited")
+                  << ")\n";
+        pa.sweep_pairings(out_dir, n_trials, max_gb, temps_c, /*pcr_cycles=*/30,
                           dna_conc, primer_conc, primer_conc, mv, dv, dntp);
         return 0;
     }
