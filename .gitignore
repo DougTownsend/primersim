@@ -8,3 +8,8 @@ lsf.*.err
 sweep_results/
 sweep_results_*.zip
 verify_pairing*/
+# Python build artifacts
+build/
+*.egg-info/
+__pycache__/
+*.so

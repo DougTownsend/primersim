@@ -367,7 +367,7 @@ namespace primersim{
         sum_r_weighted += eq.address_k_conc_vec[bind_addr3].fstrand[end5][end3] * K_i_nonamp[1][binding_end3];
     }
 
-    double Primeanneal::sim_pcr(const std::vector<pairing> &pairings_in, const char *out_filename, unsigned int addr, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc, bool log_cycles){
+    double Primeanneal::sim_pcr(const std::vector<pairing> &pairings_in, const char *out_filename, unsigned int addr, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, const std::vector<double> &address_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc, bool log_cycles, std::vector<double> *final_concs){
         EQ eq;
         thal_args ta;
         thal_results o;
@@ -382,8 +382,8 @@ namespace primersim{
         eq.last_nonspec_rrc_total = 0.0;
 
         for(unsigned int i = 0; i < N; i++){
-            eq.address_k_conc_vec[i].fstrand[0][0] = (Real)dna_conc / N;
-            eq.address_k_conc_vec[i].rstrand[0][0] = (Real)dna_conc / N;
+            eq.address_k_conc_vec[i].fstrand[0][0] = (Real)address_conc[i];
+            eq.address_k_conc_vec[i].rstrand[0][0] = (Real)address_conc[i];
             for(int ii = 0; ii < 5; ii++){
                 for(int jj = 0; jj < 5; jj++){
                     if (!jj && !ii)
@@ -685,7 +685,58 @@ namespace primersim{
             }
         }
 
+        // Item 9: report the final total DNA concentration (F-strand +
+        // R-strand) of every address present in this run. Row for the
+        // active address `addr` in the N×N matrix assembled by sim_all.
+        if (final_concs) {
+            final_concs->resize(N);
+            for (unsigned int i = 0; i < N; i++)
+                (*final_concs)[i] = (double)(eq.address_k_conc_vec[i].total_f_conc
+                                           + eq.address_k_conc_vec[i].total_r_conc);
+        }
+
         return (double)(eq.spec_total / eq.nonspec_total);
+    }
+
+    // Backward-compatible overload: uniform initial template split
+    // dna_conc/N across all addresses (the legacy behavior). Kept so
+    // test_eq / eval_addresses_thread stay byte-identical against the
+    // regression baseline. Delegates to the per-address-vector core.
+    double Primeanneal::sim_pcr(const std::vector<pairing> &pairings_in, const char *out_filename, unsigned int addr, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc, bool log_cycles){
+        const size_t N = pairings_in.size();
+        std::vector<double> address_conc(N, dna_conc / N);
+        return sim_pcr(pairings_in, out_filename, addr, pcr_cycles, temp_c_profile, address_conc, primer_f_conc, primer_r_conc, mv_conc, dv_conc, dntp_conc, log_cycles, nullptr);
+    }
+
+    // Batch entry point (item 3): run sim_pcr for every address in
+    // pairings_in, in parallel over `threads` workers. Returns the
+    // ratio vector (one per address) and the N×N final-concentration
+    // matrix — row a is address a's simulation, column i is address i's
+    // final F+R total in that run. Each worker owns the rows it pulls
+    // off the shared atomic counter, so there are no locks on the hot
+    // path and results are independent of the thread count.
+    void Primeanneal::sim_all(const std::vector<pairing> &pairings_in, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, const std::vector<double> &address_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc, unsigned int threads, std::vector<double> *ratios_out, std::vector<std::vector<double>> *conc_matrix_out){
+        const size_t N = pairings_in.size();
+        ratios_out->assign(N, 0.0);
+        conc_matrix_out->assign(N, std::vector<double>(N, 0.0));
+
+        unsigned int nthreads = threads > 0 ? threads : 1;
+        std::atomic<size_t> next(0);
+        std::vector<std::thread> pool;
+        pool.reserve(nthreads);
+        for (unsigned int t = 0; t < nthreads; t++) {
+            pool.emplace_back([&]() {
+                while (true) {
+                    size_t a = next.fetch_add(1);
+                    if (a >= N) break;
+                    std::vector<double> row;
+                    double ratio = sim_pcr(pairings_in, NULL, (unsigned int)a, pcr_cycles, temp_c_profile, address_conc, primer_f_conc, primer_r_conc, mv_conc, dv_conc, dntp_conc, /*log_cycles=*/false, &row);
+                    (*ratios_out)[a] = ratio;
+                    (*conc_matrix_out)[a] = std::move(row);
+                }
+            });
+        }
+        for (auto &th : pool) th.join();
     }
 
 

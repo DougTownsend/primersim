@@ -324,6 +324,16 @@ namespace primersim{
             // ignored and no file I/O happens — saves ~12 fopen/fclose
             // cycles per call.
             double sim_pcr(const std::vector<pairing> &pairings_in, const char *out_filename, unsigned int addr, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc, bool log_cycles);
+            // Per-address-vector core (item 2): seeds fstrand[0][0] =
+            // rstrand[0][0] = address_conc[i] for each address instead of
+            // a uniform dna_conc/N split. If final_concs is non-NULL it is
+            // filled (item 9) with total_f_conc+total_r_conc per address.
+            double sim_pcr(const std::vector<pairing> &pairings_in, const char *out_filename, unsigned int addr, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, const std::vector<double> &address_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc, bool log_cycles, std::vector<double> *final_concs = nullptr);
+            // Batch entry point (item 3): sim_pcr over every address in
+            // parallel across `threads` workers, returning the ratio
+            // vector and the N×N final-concentration matrix (row a =
+            // address a's run).
+            void sim_all(const std::vector<pairing> &pairings_in, unsigned int pcr_cycles, const std::vector<double> &temp_c_profile, const std::vector<double> &address_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc, unsigned int threads, std::vector<double> *ratios_out, std::vector<std::vector<double>> *conc_matrix_out);
             void update_strand_concs(EQ &eq, int i, int addr, const std::vector<double> &temp_c_profile, int cycle, int end5, int end3);
             void calc_strand_bindings(EQ &eq, const std::vector<double> &temp_c_profile, int i, int cycle, int addr, int end5, int end3,
                                        Real &nonspec_total, Real &sum_f_weighted, Real &sum_r_weighted);
