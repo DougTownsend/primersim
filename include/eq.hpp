@@ -344,11 +344,18 @@ namespace primersim{
             // primer), then runs sim_pcr per pair × per temperature
             // (constant temp for all pcr_cycles).
             //
-            // Output is a sequence of rolling CSV files in out_dir:
-            //   sweep.NNNN.csv  (NNNN starts at 0000, rolled at ~500 MB)
+            // Output is a sequence of rolling CSV files in out_dir,
+            // tagged with file_prefix so different primer sets are
+            // distinguishable on disk:
+            //   sweep.<file_prefix>.NNNN.csv (rolled at ~500 MB)
             // Each row is one (trial, pair) result with columns:
-            //   trial_id, f_seq, r_seq, <T1>C, <T2>C, ...
-            // A single mutex serializes the writes so all 50 rows of a
+            //   trial_id, f_pair, r_pair, <T1>C, <T2>C, ...
+            // f_pair / r_pair are "<primer_idx>[r]" tokens — the same
+            // format used by pairings.csv ("0r,4" = RC of primer 0
+            // paired with seq of primer 4). The output is unreadable
+            // without the corresponding primer pool file; the
+            // file_prefix in the filename names which one.
+            // A single mutex serializes the writes so all rows of a
             // trial land contiguously in one file (never split across
             // file boundaries). Concurrent trials may still be
             // interleaved by trial_id within one file — group by
@@ -364,7 +371,7 @@ namespace primersim{
             // Each worker draws its own seed from std::random_device
             // (/dev/urandom on Linux), so back-to-back processes and
             // concurrent workers always get independent sequences.
-            void sweep_pairings(const char *out_dir, int n_trials, double max_data_gb, const std::vector<int> &temperatures_c, unsigned int pcr_cycles, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc);
+            void sweep_pairings(const char *out_dir, const char *file_prefix, int n_trials, double max_data_gb, const std::vector<int> &temperatures_c, unsigned int pcr_cycles, double dna_conc, double primer_f_conc, double primer_r_conc, double mv_conc, double dv_conc, double dntp_conc);
             void shuffle_addresses(void);
     };
 }

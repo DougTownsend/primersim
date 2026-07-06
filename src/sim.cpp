@@ -788,9 +788,11 @@ namespace primersim{
     // can poll over_limit() without taking the lock.
     class TrialWriter {
     public:
-        TrialWriter(const char *out_dir_in, size_t max_per_file_bytes,
-                    size_t max_total_bytes, std::string header_in)
-            : out_dir(out_dir_in), max_per_file(max_per_file_bytes),
+        TrialWriter(const char *out_dir_in, const char *file_prefix_in,
+                    size_t max_per_file_bytes, size_t max_total_bytes,
+                    std::string header_in)
+            : out_dir(out_dir_in), file_prefix(file_prefix_in),
+              max_per_file(max_per_file_bytes),
               max_total(max_total_bytes), header(std::move(header_in)) {
             rotate_locked();
         }
@@ -813,7 +815,8 @@ namespace primersim{
         void rotate_locked() {
             if (out.is_open()) out.close();
             char fn[512];
-            snprintf(fn, sizeof(fn), "%s/sweep.%04d.csv", out_dir.c_str(), part_num++);
+            snprintf(fn, sizeof(fn), "%s/sweep.%s.%04d.csv",
+                     out_dir.c_str(), file_prefix.c_str(), part_num++);
             out.open(fn);
             out << header;
             cur_bytes = header.size();
@@ -821,6 +824,7 @@ namespace primersim{
         std::mutex mu;
         std::ofstream out;
         std::string out_dir;
+        std::string file_prefix;
         int part_num = 0;
         size_t cur_bytes = 0;
         size_t max_per_file;
@@ -831,6 +835,7 @@ namespace primersim{
 
     void Primeanneal::sweep_pairings(
             const char *out_dir,
+            const char *file_prefix,
             int n_trials,
             double max_data_gb,
             const std::vector<int> &temperatures_c,
@@ -839,8 +844,11 @@ namespace primersim{
             double mv_conc, double dv_conc, double dntp_conc){
         mkdir(out_dir, 0755);  // best-effort
 
-        // Build the CSV header once: trial_id, f_seq, r_seq, <T>C cols.
-        std::string header = "trial_id,f_seq,r_seq";
+        // Build the CSV header once. f_pair / r_pair are "<idx>[r]"
+        // tokens (e.g. "12r"); the primer sequences are recovered by
+        // looking the index up in the primer pool file named in
+        // file_prefix.
+        std::string header = "trial_id,f_pair,r_pair";
         for (int t : temperatures_c) {
             header += ",";
             header += std::to_string(t);
@@ -852,7 +860,7 @@ namespace primersim{
         const size_t max_total_bytes = (max_data_gb > 0)
             ? (size_t)(max_data_gb * 1024.0 * 1024.0 * 1024.0)
             : 0;
-        TrialWriter writer(out_dir, per_file_cap, max_total_bytes, header);
+        TrialWriter writer(out_dir, file_prefix, per_file_cap, max_total_bytes, header);
 
         // Worker stops on (a) n_trials cap, (b) data-size cap, or
         // (c) external SIGTERM. Each worker has an independent
@@ -885,23 +893,19 @@ namespace primersim{
 
                 // Build the trial's full text in a local string, then
                 // hand it to the writer in one atomic write — keeps
-                // all 50 rows of a trial contiguous in the file.
+                // all rows of a trial contiguous in the file. Pair
+                // columns use the same "<idx>[r]" token format as
+                // pairings.csv.
                 std::string content;
-                content.reserve(N * 220);
-                char numbuf[40];
+                content.reserve(N * 80);
+                char numbuf[64];
                 for (size_t i = 0; i < N; i++) {
                     const auto &pr = local_pairings[i];
-                    const char *fseq = pr.f_rc
-                        ? this->primer_pool[pr.f_idx].rc
-                        : this->primer_pool[pr.f_idx].seq;
-                    const char *rseq = pr.r_rc
-                        ? this->primer_pool[pr.r_idx].rc
-                        : this->primer_pool[pr.r_idx].seq;
-                    snprintf(numbuf, sizeof(numbuf), "%d,", trial);
+                    snprintf(numbuf, sizeof(numbuf), "%d,%d%s,%d%s",
+                             trial,
+                             pr.f_idx, pr.f_rc ? "r" : "",
+                             pr.r_idx, pr.r_rc ? "r" : "");
                     content += numbuf;
-                    content += fseq;
-                    content += ',';
-                    content += rseq;
                     for (size_t ti = 0; ti < T; ti++) {
                         snprintf(numbuf, sizeof(numbuf), ",%e", ratios[i][ti]);
                         content += numbuf;

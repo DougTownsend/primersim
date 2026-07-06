@@ -1,9 +1,23 @@
 #include <stdio.h>
 #include <iostream>
 #include <random>
+#include <string>
+#include <cstdlib>
 #include "eq.hpp"
 
 void random_address_assignment(primersim::Primeanneal &pa, int count);
+
+// strip dirname + ".csv" suffix to get a basename usable in filenames.
+//   "primers_100p.csv"          → "primers_100p"
+//   "/path/to/primers_1958.csv" → "primers_1958"
+static std::string basename_no_ext(const std::string &path) {
+    std::string s = path;
+    auto slash = s.find_last_of('/');
+    if (slash != std::string::npos) s = s.substr(slash + 1);
+    auto dot = s.find_last_of('.');
+    if (dot != std::string::npos) s = s.substr(0, dot);
+    return s;
+}
 
 int main(int argc, char **argv){
     // Usage:
@@ -27,10 +41,22 @@ int main(int argc, char **argv){
     double mv = 100;
     double dv = 1.5;
     double dntp = 0.2;
-    pa.read_primer_pool("primers.csv");
-    pa.read_pairings("pairings.csv");
-    std::cout << pa.primer_pool.size() << " primers, " << pa.pairings.size()
-              << " pairings, num_cpu=" << pa.num_cpu << "\n";
+    // Input file paths are env-var configurable so different primer
+    // sets can be swapped without renaming. Defaults match the legacy
+    // hardcoded names. The basename (without dir and .csv) is also
+    // used to tag sweep output filenames so it's clear which primer
+    // set produced which sweep.
+    const char *primers_path  = std::getenv("PRIMERS_FILE");
+    if (!primers_path)  primers_path  = "primers.csv";
+    const char *pairings_path = std::getenv("PAIRINGS_FILE");
+    if (!pairings_path) pairings_path = "pairings.csv";
+    std::string primers_basename = basename_no_ext(primers_path);
+
+    pa.read_primer_pool(primers_path);
+    pa.read_pairings(pairings_path);
+    std::cout << pa.primer_pool.size() << " primers (" << primers_path << "), "
+              << pa.pairings.size() << " pairings (" << pairings_path << "), "
+              << "num_cpu=" << pa.num_cpu << "\n";
     // Precompute every (primer, kind, primer, kind) thal pair once.
     // The cache is pairing-agnostic: shuffling pairings (e.g. for
     // exploring assignments) does NOT invalidate it. Uses pa.num_cpu
@@ -46,13 +72,14 @@ int main(int argc, char **argv){
         const char *out_dir = (argc > 4) ? argv[4] : "sweep_out";
         double max_gb = (argc > 5) ? std::atof(argv[5]) : 0.0;
         std::vector<int> temps_c;
-        for (int t = 50; t <= 60; t++) temps_c.push_back(t);
+        for (int t = 50; t <= 70; t++) temps_c.push_back(t);
         std::cout << "sweep: "
                   << (n_trials == 0 ? "infinite" : std::to_string(n_trials))
                   << " trials × " << temps_c.size() << " temps -> " << out_dir
                   << " (max " << (max_gb > 0 ? std::to_string(max_gb) + " GB" : "unlimited")
                   << ")\n";
-        pa.sweep_pairings(out_dir, n_trials, max_gb, temps_c, /*pcr_cycles=*/30,
+        pa.sweep_pairings(out_dir, primers_basename.c_str(), n_trials, max_gb,
+                          temps_c, /*pcr_cycles=*/30,
                           dna_conc, primer_conc, primer_conc, mv, dv, dntp);
         return 0;
     }
