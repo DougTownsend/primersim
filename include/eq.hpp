@@ -275,6 +275,13 @@ namespace primersim{
             std::mutex outfile_mtx;
             unsigned int num_cpu;
 
+            // Constant enthalpy (dH, cal/mol) added to the 3'-end-anchored
+            // (productive/extending) bindings only, modeling the extra
+            // stability the polymerase confers when it clamps the primer's
+            // 3' end onto the template. Applied per-simulate at K computation
+            // time (no cache rebuild); negative values stabilize. Default 0.
+            double dh_3p_offset = 0.0;
+
         public:
             Primeanneal();
             ~Primeanneal();

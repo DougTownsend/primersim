@@ -548,13 +548,24 @@ namespace primersim{
                 if (!std::isfinite((double)v[0]) || !std::isfinite((double)v[1])) return 0.0;
                 return (Real)this->dhds_to_eq_const(v, tc_);
             };
+            // 3'-binding K with the constant enthalpy offset that models the
+            // extra stability the polymerase provides at the primer-template
+            // 3' junction. Added to dH only (entropy unchanged). The
+            // non-amplifying remainder (tmp_dhds_K_nonamp) below is formed
+            // from the RAW 3' dh/ds, so this offset stabilizes ONLY the
+            // productive/extending complex, not the non-amp portion.
+            auto safe_K_3p = [this](ThalReal v[2], double tc_) -> Real {
+                if (!std::isfinite((double)v[0]) || !std::isfinite((double)v[1])) return 0.0;
+                ThalReal vv[2] = { (ThalReal)(v[0] + this->dh_3p_offset), v[1] };
+                return (Real)this->dhds_to_eq_const(vv, tc_);
+            };
             const double tc = temp_c_profile[cycle-1];
             for(unsigned int i = 0; i < N; i++){
                 auto &kc = eq.address_k_conc_vec[i];
                 for (int p = 0; p < 2; p++) {
                     for (int e = 0; e < 4; e++) {
                         kc.tmp_dhds_K   [p][e] = safe_K(kc.tmp_dhds   [p][e], tc);
-                        kc.tmp_dhds_K_3p[p][e] = safe_K(kc.tmp_dhds_3p[p][e], tc);
+                        kc.tmp_dhds_K_3p[p][e] = safe_K_3p(kc.tmp_dhds_3p[p][e], tc);
                         bool finite_total = std::isfinite((double)kc.tmp_dhds[p][e][dh])
                                          && std::isfinite((double)kc.tmp_dhds[p][e][ds]);
                         bool finite_3p    = std::isfinite((double)kc.tmp_dhds_3p[p][e][dh])
@@ -575,10 +586,10 @@ namespace primersim{
                         }
                     }
                 }
-                kc.dhds_K_primer_f_addr_frc_3p = safe_K(kc.dhds_primer_f_addr_frc_3p, tc);
-                kc.dhds_K_primer_r_addr_frc_3p = safe_K(kc.dhds_primer_r_addr_frc_3p, tc);
-                kc.dhds_K_primer_f_addr_rrc_3p = safe_K(kc.dhds_primer_f_addr_rrc_3p, tc);
-                kc.dhds_K_primer_r_addr_rrc_3p = safe_K(kc.dhds_primer_r_addr_rrc_3p, tc);
+                kc.dhds_K_primer_f_addr_frc_3p = safe_K_3p(kc.dhds_primer_f_addr_frc_3p, tc);
+                kc.dhds_K_primer_r_addr_frc_3p = safe_K_3p(kc.dhds_primer_r_addr_frc_3p, tc);
+                kc.dhds_K_primer_f_addr_rrc_3p = safe_K_3p(kc.dhds_primer_f_addr_rrc_3p, tc);
+                kc.dhds_K_primer_r_addr_rrc_3p = safe_K_3p(kc.dhds_primer_r_addr_rrc_3p, tc);
             }
 
             // Per-cycle accumulators populated by calc_strand_bindings:

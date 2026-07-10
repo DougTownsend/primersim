@@ -124,11 +124,14 @@ class Simulator:
     """
 
     def __init__(self, primers_file: str, mv: float, dv: float, dntp: float,
-                 num_cpu: int):
+                 num_cpu: int, dh_3p_offset: float = 0.0):
         self._engine = _core.Engine(primers_file, float(mv), float(dv),
                                     float(dntp), int(num_cpu))
         self._num_cpu = int(num_cpu)
         self._mv, self._dv, self._dntp = float(mv), float(dv), float(dntp)
+        if dh_3p_offset:
+            self._engine.set_3p_dh_offset(float(dh_3p_offset))
+        self._dh_3p_offset = float(dh_3p_offset)
 
         # Experiment description, filled via the setters below.
         self._addresses: List[Tuple[int, int, bool, bool]] = []
@@ -243,6 +246,105 @@ class Simulator:
         self._engine.set_cations(float(mv), float(dv), float(dntp))
         self._mv, self._dv, self._dntp = float(mv), float(dv), float(dntp)
 
+    def set_3p_dh_offset(self, dh: float) -> None:
+        """Constant enthalpy offset (dH, cal/mol) added to the 3'-anchored
+        (productive/extending) bindings only — a model for the extra
+        stability the polymerase provides at the primer 3' junction.
+
+        Applied per-simulate at K computation; it does **not** rebuild the
+        dH/dS cache, so it is cheap to sweep. Negative values stabilize the
+        productive complex. The non-amplifying remainder of each duplex is
+        unaffected.
+        """
+        self._engine.set_3p_dh_offset(float(dh))
+        self._dh_3p_offset = float(dh)
+
+    @property
+    def dh_3p_offset(self) -> float:
+        return self._dh_3p_offset
+
+    # ---- manual thermodynamic-cache control ----------------------------
+    #
+    # By default the engine fills its dH/dS cache with primer3's `thal`. These
+    # methods let you overwrite it with values from any external predictor
+    # (ViennaRNA, oxDNA, NUPACK, a lookup table, ...), so primersim's PCR
+    # equilibrium runs on that predictor's thermodynamics instead of thal.
+    #
+    # The cache is keyed by SLOT = 2*primer_index + kind, where kind 0 is the
+    # primer's literal sequence and kind 1 its reverse complement. There are
+    # `num_cache_slots` = 2*num_primers slots. Two caches, mirroring what
+    # primersim consumes:
+    #   * "total" (thal_any)   — the full/most-stable interaction (symmetric)
+    #   * "3p"    (thal_end1)   — slot a's 3' end anchored (productive/amplifying)
+    # dH is cal/mol, dS is cal/mol/K; the engine forms K(T) = exp(-(dH - T*dS)
+    # / (R*T)) each cycle. Construction and set_cations() repopulate from thal,
+    # so call these AFTER them.
+
+    @property
+    def num_cache_slots(self) -> int:
+        """Number of cache slots (= 2 * num_primers)."""
+        return self._engine.num_slots()
+
+    def cache_slot(self, primer_idx: int, rc: bool = False) -> int:
+        """Slot index for a primer's sequence (``rc=False``) or its reverse
+        complement (``rc=True``): ``2*primer_idx + int(rc)``."""
+        self._check_index(primer_idx)
+        return 2 * primer_idx + (1 if rc else 0)
+
+    def get_cache_entry(self, a: int, b: int, kind: str = "total") -> Tuple[float, float]:
+        """Return ``(dH, dS)`` for the interaction between slots ``a`` and ``b``.
+        ``kind`` is ``"total"`` (thal_any) or ``"3p"`` (thal_end1, slot ``a``'s
+        3' end anchored)."""
+        if kind == "total":
+            return self._engine.get_cache_total(a, b)
+        if kind in ("3p", "three_prime"):
+            return self._engine.get_cache_3p(a, b)
+        raise ValueError("kind must be 'total' or '3p'")
+
+    def set_cache_entry(self, a: int, b: int, dh: float, ds: float,
+                        kind: str = "total") -> None:
+        """Overwrite one cache entry (see :meth:`get_cache_entry`)."""
+        if kind == "total":
+            self._engine.set_cache_total(a, b, float(dh), float(ds))
+        elif kind in ("3p", "three_prime"):
+            self._engine.set_cache_3p(a, b, float(dh), float(ds))
+        else:
+            raise ValueError("kind must be 'total' or '3p'")
+
+    def set_dimer_cache(self, total_fn=None, three_prime_fn=None) -> None:
+        """Fill the cache from external predictors, over every slot pair.
+
+        ``total_fn(seq_a, seq_b) -> (dH, dS)`` supplies the total (thal_any)
+        interaction; ``three_prime_fn(seq_a, seq_b) -> (dH, dS)`` supplies the
+        3'-anchored (thal_end1) interaction with **seq_a's 3' end anchored**.
+        Either may be omitted to leave that cache at its thal values. dH is
+        cal/mol, dS cal/mol/K.
+
+        Single-temperature predictors: if your tool only gives a ΔG at the
+        anneal temperature ``T`` you plan to run, return ``(dG, 0.0)`` — the
+        engine then uses ``K = exp(-dG/(R*T))`` (ΔG held constant in ``T``); run
+        the simulation at that ``T``. For temperature-dependent K, supply real
+        dH/dS (e.g. from a van't Hoff fit across two temperatures).
+        """
+        n = self._engine.num_primers()
+        seqs = [self._engine.primer_seq(i) for i in range(n)]
+
+        def slot_seq(s: int) -> str:
+            base = seqs[s // 2]
+            return base if s % 2 == 0 else _reverse_complement(base)
+
+        M = self._engine.num_slots()
+        for a in range(M):
+            sa = slot_seq(a)
+            for b in range(M):
+                sb = slot_seq(b)
+                if three_prime_fn is not None:
+                    dh, ds = three_prime_fn(sa, sb)
+                    self._engine.set_cache_3p(a, b, float(dh), float(ds))
+                if total_fn is not None and b >= a:   # symmetric: canonical half
+                    dh, ds = total_fn(sa, sb)
+                    self._engine.set_cache_total(a, b, float(dh), float(ds))
+
     def set_temperature(self, temp: Union[float, Sequence[float]]) -> None:
         """Set the anneal temperature (deg C).
 
@@ -329,3 +431,10 @@ class Simulator:
 
 def _is_scalar(x) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+_COMP = {"A": "T", "T": "A", "G": "C", "C": "G", "N": "N"}
+
+
+def _reverse_complement(s: str) -> str:
+    return "".join(_COMP[c] for c in reversed(s))
